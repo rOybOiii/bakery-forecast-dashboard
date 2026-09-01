@@ -1,0 +1,56 @@
+{
+  "contract_version": "dashboard_bundle_v1",
+  "generated_at": "2026-09-01T20:15:56.839699+00:00",
+  "synthetic": true,
+  "manager_dashboard_v1": true,
+  "units": "dollars",
+  "restaurants": [
+    "downtown",
+    "fscoffee",
+    "hurricane",
+    "springdale"
+  ],
+  "prior_origin": "2025-01-31",
+  "current_origin": "2025-02-28",
+  "shared_forecast_start": "2025-03-01",
+  "shared_forecast_end": "2025-03-14",
+  "current_future_actuals_withheld": true,
+  "historical_missing_days": "NaN; never zero-filled",
+  "historical_model_estimate": "one-step-ahead Kalman prediction from the current-origin fitted model; not an archived forecast issued on each historical date",
+  "forecast_intervals": {
+    "95_percent": [
+      "q025",
+      "q975"
+    ],
+    "30_percent": [
+      "q35",
+      "q65"
+    ],
+    "50_percent": [
+      "q25",
+      "q75"
+    ],
+    "60_percent": [
+      "q20",
+      "q80"
+    ],
+    "90_percent": [
+      "q05",
+      "q95"
+    ],
+    "best_estimate": "median"
+  },
+  "feedback_architecture": "support-preserving full ERP worlds",
+  "forecast_can_reweight_but_not_reshape_erp_worlds": true,
+  "event_maturity_days": 0,
+  "erp_boundary_strategy": "protected_right_core",
+  "erp_boundary_method": "frozen_state_aware_ar1_exact_enumeration",
+  "cpd_included": true,
+  "cpd_truth_assisted": true,
+  "cpd_scope_warning": "CPD proposal acceptance uses synthetic truth in this QA/demo bundle; it is not a production CPD acceptance policy.",
+  "aggregate_interval_status": "available as an independence approximation",
+  "aggregate_interval_method": "Monte Carlo sum after independently pairing draws from the four restaurant posterior marginals",
+  "aggregate_interval_caveat": "Cross-restaurant posterior dependence is not identified by the four separate Forecast fits and is not represented in these combined bands.",
+  "change_since_previous_forecast_status": "withheld: the prior origin does not overlap enough of the current 14-day horizon for a fair comparison",
+  "streamlit_runs_inference": false
+}

@@ -1,0 +1,17 @@
+{
+  "contract_version": "dashboard_bundle_v1",
+  "restaurants": [
+    "downtown",
+    "fscoffee",
+    "hurricane",
+    "springdale"
+  ],
+  "current_origin": "2025-02-28",
+  "forecast_start": "2025-03-01",
+  "forecast_end": "2025-03-14",
+  "forecast_days": 14,
+  "daily_rows": 2265,
+  "disturbance_rows": 25,
+  "validated_at": "2026-09-01T20:15:56.839684+00:00",
+  "status": "valid"
+}

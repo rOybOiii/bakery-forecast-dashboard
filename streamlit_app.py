@@ -1,0 +1,340 @@
+"""Synthetic bakery planning dashboard. No model fitting happens here."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+from html import escape
+
+import pandas as pd
+import streamlit as st
+
+from dashboard_charts import (
+    forecast_chart,
+    history_review_chart,
+    recent_performance_chart,
+)
+from dashboard_data import (
+    RESTAURANT_LABELS,
+    disturbance_rows,
+    forecast_rows,
+    history_rows,
+    load_bundle,
+    recent_rows,
+    restaurant_summary,
+)
+from history_window_control import history_window_control
+
+
+ROOT = Path(__file__).resolve().parent
+BUNDLE_DIR = ROOT / "data" / "dashboard_bundle_v1"
+
+
+st.set_page_config(
+    page_title="Bakery Forecast",
+    page_icon="🥐",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --ink: #1d2a24;
+        --green: #2f6b55;
+        --cream: #f7f4ec;
+        --paper: #fffdf8;
+        --line: #e4dfd4;
+        --muted: #6f7972;
+    }
+    .stApp { background: var(--cream); color: var(--ink); }
+    [data-testid="stHeader"] { background: rgba(247, 244, 236, 0.92); }
+    [data-testid="stSidebar"] { background: #ecf0e9; border-right: 1px solid var(--line); }
+    [data-testid="stMetric"] {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 16px 18px;
+        box-shadow: 0 3px 14px rgba(30, 42, 36, 0.04);
+    }
+    [data-testid="stMetricLabel"] { color: var(--muted); }
+    [data-testid="stMetricValue"] { color: var(--ink); }
+    .dashboard-kicker {
+        color: var(--green);
+        font-size: 0.78rem;
+        font-weight: 750;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        margin-bottom: 0.2rem;
+    }
+    .dashboard-title {
+        color: var(--ink);
+        font-size: clamp(2.15rem, 4vw, 3.5rem);
+        font-weight: 750;
+        letter-spacing: -0.045em;
+        line-height: 1.02;
+        margin: 0;
+    }
+    .dashboard-subtitle { color: var(--muted); margin-top: 0.55rem; }
+    .section-title {
+        color: var(--ink);
+        font-size: 1.35rem;
+        font-weight: 720;
+        letter-spacing: -0.02em;
+        margin: 0.4rem 0 0;
+    }
+    .section-note { color: var(--muted); font-size: 0.92rem; margin-bottom: 0.5rem; }
+    .finding-card {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-left: 4px solid #d56a4a;
+        border-radius: 10px;
+        padding: 0.72rem 0.85rem;
+        margin-bottom: 0.55rem;
+    }
+    .finding-card strong { color: var(--ink); }
+    .finding-card small { color: var(--muted); }
+    div[data-testid="stAlert"] { border-radius: 12px; }
+    .block-container { max-width: 1320px; padding-top: 4.75rem; padding-bottom: 4rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+@st.cache_data
+def dashboard_bundle(bundle_version: int):
+    """Cache a published bundle, invalidating when validation is republished."""
+
+    del bundle_version
+    return load_bundle(BUNDLE_DIR)
+
+
+def money(value: float) -> str:
+    return f"${value:,.0f}" if pd.notna(value) else "—"
+
+
+def percent(value: float) -> str:
+    return f"{value:.1f}%" if pd.notna(value) else "—"
+
+
+bundle = dashboard_bundle((BUNDLE_DIR / "validation.json").stat().st_mtime_ns)
+
+with st.sidebar:
+    st.markdown("### Planning view")
+    selected_label = st.selectbox(
+        "Restaurant",
+        options=list(RESTAURANT_LABELS.values()),
+        index=0,
+    )
+    restaurant = next(
+        key for key, label in RESTAURANT_LABELS.items() if label == selected_label
+    )
+    st.caption(
+        f"Forecast through {pd.Timestamp(bundle.manifest['shared_forecast_end']):%B %-d, %Y}"
+    )
+    st.divider()
+    st.markdown("**About this preview**")
+    st.caption(
+        "Synthetic restaurant data is shown here. Forecasting and event analysis "
+        "were completed before the dashboard was published."
+    )
+
+header, status = st.columns([4, 1])
+with header:
+    st.markdown('<div class="dashboard-kicker">Daily production planning</div>', unsafe_allow_html=True)
+    st.markdown('<h1 class="dashboard-title">Bakery Forecast</h1>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="dashboard-subtitle">{selected_label} · A practical look at what is likely next</div>',
+        unsafe_allow_html=True,
+    )
+with status:
+    st.success("Data ready", icon="✅")
+    st.caption(f"Updated {pd.Timestamp(bundle.manifest['generated_at']):%b %-d, %Y}")
+
+st.info(
+    "This is a synthetic demonstration. It is safe to explore and contains no client sales data.",
+    icon="ℹ️",
+)
+
+summary = restaurant_summary(bundle, restaurant)
+metric_columns = st.columns(4)
+metric_columns[0].metric(
+    "Next 14 days",
+    money(summary["forecast_14_day_total"]),
+    help="The sum of the best sales estimate for each of the next 14 days.",
+)
+metric_columns[1].metric(
+    "Average forecast day",
+    money(summary["forecast_average_daily_sales"]),
+    help="The 14-day forecast total divided by 14 days.",
+)
+metric_columns[2].metric(
+    "Recent average miss",
+    money(summary["recent_mae_dollars"]),
+    help=(
+        "The average absolute dollar difference between forecast and actual sales "
+        "per reported day in the recent evaluation period."
+    ),
+)
+metric_columns[3].metric(
+    "Recent error rate",
+    percent(summary["recent_mape_percent"]),
+    help=(
+        "For each reported day, the absolute forecast error is divided by that "
+        "day's actual sales; those daily percentages are then averaged. It is not "
+        "the error on the 14-day sales total."
+    ),
+)
+
+st.markdown('<div class="section-title">The next two weeks</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-note">The dark line is the best estimate. Shaded areas show other plausible outcomes.</div>',
+    unsafe_allow_html=True,
+)
+future = forecast_rows(bundle, restaurant)
+ranges = st.multiselect(
+    "Show plausible ranges",
+    options=["95%", "90%", "60%", "50%", "30%"],
+    default=["90%", "50%", "30%"],
+    help=(
+        "Wider ranges include more possibilities; narrower ranges focus near the center. "
+        + (
+            "For All restaurants, these are approximate combined ranges formed by "
+            "independently pairing draws from the four restaurant forecasts."
+            if restaurant == "all"
+            else ""
+        )
+    ),
+)
+if restaurant == "all":
+    st.caption(
+        "Combined ranges approximate the four restaurant forecasts as independent; "
+        "unmeasured cross-restaurant dependence is not included."
+    )
+st.altair_chart(forecast_chart(future, ranges), width="stretch")
+st.caption(
+    "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag vertically "
+    "to pan; double-click to reset."
+)
+
+left, right = st.columns([1.75, 1], gap="large")
+with left:
+    st.markdown('<div class="section-title">How the last forecast performed</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note"><span style="color:#2f6b55">Forecast</span> compared with <span style="color:#d56a4a">actual sales</span>, using only information available beforehand.</div>',
+        unsafe_allow_html=True,
+    )
+    recent = recent_rows(bundle, restaurant)
+    st.altair_chart(
+        recent_performance_chart(recent, show_range=restaurant != "all"),
+        width="stretch",
+    )
+    st.caption(
+        "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag vertically "
+        "to pan; double-click to reset."
+    )
+    observed_days = int(summary["recent_observed_days"])
+    if observed_days < 14:
+        st.caption(
+            f"Accuracy uses {observed_days} reported days. Missing days were excluded—not treated as zero sales."
+        )
+
+with right:
+    st.markdown('<div class="section-title">Recent unusual periods</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">Possible events and longer sales shifts found before this forecast.</div>',
+        unsafe_allow_html=True,
+    )
+    with st.popover(
+        "What do the evidence labels mean?",
+        type="tertiary",
+        icon=":material/help:",
+        key="evidence_guide",
+    ):
+        st.markdown(
+            """
+            **Strong evidence:** Appeared in at least 70% of plausible event histories.
+
+            **Moderate evidence:** Appeared in 35%–69% of plausible event histories.
+
+            **Limited evidence:** Appeared in fewer than 35% of plausible event histories.
+
+            **Selected shift:** A longer sales shift selected for this synthetic demonstration.
+            """
+        )
+    recent_start = recent["target_date"].min()
+    recent_end = recent["target_date"].max()
+    findings = disturbance_rows(bundle, restaurant)
+    findings = findings.loc[
+        findings["end_date"].ge(recent_start)
+        & findings["start_date"].le(recent_end)
+    ].head(4)
+    if findings.empty:
+        st.caption("No unusual periods overlapped these recent 14 days.")
+    for finding in findings.itertuples(index=False):
+        evidence = escape(finding.evidence_label)
+        when = f"{finding.start_date:%b %-d}–{finding.end_date:%b %-d, %Y}"
+        st.markdown(
+            f"""
+            <div class="finding-card">
+              <strong>{finding.restaurant_label}: {finding.direction_label}</strong><br>
+              <small>{finding.impact_label}<br>{finding.kind_label} · {finding.duration_label} · {when} · {evidence}</small>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+with st.expander("Explore forecast, event, and sales-shift history", expanded=False):
+    history = disturbance_rows(bundle, restaurant)
+    historical_sales = history_rows(bundle, restaurant)
+    history_min = min(
+        historical_sales["target_date"].min(), history["start_lower"].min()
+    ).date()
+    history_max = max(
+        historical_sales["target_date"].max(), history["end_upper"].max()
+    ).date()
+    initial_start = max(
+        history_min,
+        (pd.Timestamp(history_max) - pd.DateOffset(months=4)).date()
+        + timedelta(days=1),
+    )
+    large_history = st.toggle(
+        "Use a larger sales-history view",
+        value=False,
+        help="This enlarges only the actual-versus-expected sales chart.",
+    )
+    selected_start, selected_end = history_window_control(
+        minimum=history_min,
+        maximum=history_max,
+        initial_start=initial_start,
+        window_days=(history_max - initial_start).days,
+        key="manager_history_window",
+    )
+    st.altair_chart(
+        history_review_chart(
+            historical_sales,
+            history,
+            all_restaurants=restaurant == "all",
+            initial_start=pd.Timestamp(selected_start),
+            initial_end=pd.Timestamp(selected_end),
+            expanded=large_history,
+        ),
+        key="history_review_chart",
+        width="stretch",
+    )
+    st.caption(
+        "Orange is actual sales; green is the model's one-step-ahead expectation. "
+        "Shaded periods mark detected events or longer shifts. These are historical "
+        "model estimates, not forecasts that were previously delivered to a manager. "
+        "Faint extensions show uncertain event boundaries. A sales shift is a longer period "
+        "that behaved differently from the surrounding baseline. Drag the highlighted "
+        "four-month window along the compact navigator above the charts to review earlier "
+        "or later history; the charts update when you release it."
+    )
+
+st.divider()
+st.caption(
+    "Planning aid · Synthetic demonstration · The dashboard reads completed results and never runs model sampling."
+)
