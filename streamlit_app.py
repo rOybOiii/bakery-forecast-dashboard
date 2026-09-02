@@ -331,9 +331,10 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
     history_max = max(
         historical_sales["target_date"].max(), history["end_upper"].max()
     ).date()
+    history_months = 1 if mobile_request else 4
     initial_start = max(
         history_min,
-        (pd.Timestamp(history_max) - pd.DateOffset(months=4)).date()
+        (pd.Timestamp(history_max) - pd.DateOffset(months=history_months)).date()
         + timedelta(days=1),
     )
     large_history = st.toggle(
@@ -346,7 +347,8 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
         maximum=history_max,
         initial_start=initial_start,
         window_days=(history_max - initial_start).days,
-        key="manager_history_window",
+        key=f"manager_history_window_{history_months}_month",
+        compact=mobile_request,
     )
     st.altair_chart(
         history_review_chart(
@@ -366,8 +368,9 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
         "model estimates, not forecasts that were previously delivered to a manager. "
         "Faint extensions show uncertain event boundaries. A sales shift is a longer period "
         "that behaved differently from the surrounding baseline. Drag the highlighted "
-        "four-month window along the compact navigator above the charts to review earlier "
-        "or later history; the charts update when you release it."
+        f"{'one-month' if mobile_request else 'four-month'} window along the compact "
+        "navigator above the charts to review earlier or later history; the charts update "
+        "when you release it."
     )
 
 st.divider()

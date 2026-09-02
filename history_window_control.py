@@ -11,6 +11,7 @@ _HTML = """
 <div class="history-window-control">
   <div class="selection-label selection-label-start"></div>
   <div class="selection-label selection-label-end"></div>
+  <div class="selection-label selection-label-range"></div>
   <div class="history-track">
     <div
       class="history-selection"
@@ -107,6 +108,31 @@ _CSS = """
   transform: translateX(-100%);
 }
 
+.selection-label-range {
+  display: none;
+}
+
+.history-window-control.is-compact {
+  height: 96px;
+  padding-top: 48px;
+}
+
+.history-window-control.is-compact .selection-label-start,
+.history-window-control.is-compact .selection-label-end {
+  display: none;
+}
+
+.history-window-control.is-compact .selection-label-range {
+  display: block;
+  top: 0;
+  left: 50%;
+  width: max-content;
+  transform: translateX(-50%);
+  text-align: center;
+  line-height: 13px;
+  white-space: pre-line;
+}
+
 .history-ticks {
   position: relative;
   width: 100%;
@@ -142,7 +168,10 @@ export default function(component) {
   const selection = root.querySelector('.history-selection');
   const startLabel = root.querySelector('.selection-label-start');
   const endLabel = root.querySelector('.selection-label-end');
+  const rangeLabel = root.querySelector('.selection-label-range');
   const ticks = root.querySelector('.history-ticks');
+
+  root.classList.toggle('is-compact', Boolean(data.compact));
 
   const minDay = Number(data.min_day);
   const maxDay = Number(data.max_day);
@@ -177,6 +206,7 @@ export default function(component) {
     endLabel.style.left = `calc(10px + (100% - 20px) * ${(left + width) / 100})`;
     startLabel.textContent = formatDate(currentStart);
     endLabel.textContent = formatDate(currentStart + windowDays);
+    rangeLabel.textContent = `${formatDate(currentStart)}\n–\n${formatDate(currentStart + windowDays)}`;
   };
 
   const requestRender = () => {
@@ -287,6 +317,7 @@ def history_window_control(
     initial_start: date,
     window_days: int,
     key: str,
+    compact: bool = False,
 ) -> tuple[date, date]:
     """Return a fixed history window, committing changes only after drag release."""
 
@@ -308,12 +339,13 @@ def history_window_control(
             "max_day": maximum_day,
             "window_days": window_days,
             "start_day": selected_start,
+            "compact": compact,
         },
         default={"start_day": selected_start},
         key=key,
         on_start_day_change=lambda: None,
         width="stretch",
-        height=72,
+        height=96 if compact else 72,
     )
     if result.start_day is not None:
         selected_start = min(

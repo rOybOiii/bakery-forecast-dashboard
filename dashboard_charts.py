@@ -78,6 +78,54 @@ def forecast_chart(
             tooltip=tap_tooltip,
         )
     )
+    if not allow_y_navigation:
+        tapped_day = alt.selection_point(
+            name="forecast_tapped_day",
+            fields=["target_date"],
+            nearest=True,
+            on="click",
+            clear=False,
+            empty=False,
+            toggle=False,
+        )
+        tap_column = (
+            base.mark_rule(opacity=0.001, strokeWidth=18)
+            .encode(tooltip=tap_tooltip)
+            .add_params(tapped_day)
+        )
+        selected_rule = (
+            base.transform_filter(tapped_day)
+            .mark_rule(color=MUTED, opacity=0.48, strokeWidth=1)
+        )
+        selected_point = (
+            base.transform_filter(tapped_day)
+            .mark_point(color=INK, filled=True, size=78)
+            .encode(y=_currency_y("median:Q"))
+        )
+        selected_label = (
+            base.transform_filter(tapped_day)
+            .transform_calculate(
+                tap_detail=(
+                    "timeFormat(datum.target_date, '%b %e') + "
+                    "' · Best estimate ' + format(datum.median, '$,.0f')"
+                )
+            )
+            .mark_text(
+                align="center",
+                baseline="top",
+                color=INK,
+                fontSize=12,
+                fontWeight=600,
+                stroke="#F7F4EC",
+                strokeWidth=4,
+            )
+            .encode(
+                x=alt.XValue(alt.ExprRef(expr="width / 2")),
+                y=alt.YValue(8),
+                text=alt.Text("tap_detail:N"),
+            )
+        )
+        layers.extend([tap_column, selected_rule, selected_point, selected_label])
     chart = (
         alt.layer(*layers)
         .properties(height=340)
@@ -146,6 +194,70 @@ def recent_performance_chart(
         )
     )
     layers.extend([forecast, actual, forecast_tap_target, actual_tap_target])
+    if not allow_y_navigation:
+        tapped_day = alt.selection_point(
+            name="performance_tapped_day",
+            fields=["target_date"],
+            nearest=True,
+            on="click",
+            clear=False,
+            empty=False,
+            toggle=False,
+        )
+        tap_column = (
+            base.mark_rule(opacity=0.001, strokeWidth=18)
+            .encode(tooltip=tap_tooltip)
+            .add_params(tapped_day)
+        )
+        selected_rule = (
+            base.transform_filter(tapped_day)
+            .mark_rule(color=MUTED, opacity=0.48, strokeWidth=1)
+        )
+        selected_forecast = (
+            base.transform_filter(tapped_day)
+            .mark_point(color=GREEN, filled=True, size=78)
+            .encode(y=_currency_y("median:Q"))
+        )
+        selected_actual = (
+            base.transform_filter(tapped_day)
+            .transform_filter("datum.actual_available")
+            .mark_point(color=TERRACOTTA, filled=True, size=78)
+            .encode(y=_currency_y("actual_sales:Q"))
+        )
+        selected_label = (
+            base.transform_filter(tapped_day)
+            .transform_calculate(
+                tap_detail=(
+                    "timeFormat(datum.target_date, '%b %e') + "
+                    "' · Forecast ' + format(datum.median, '$,.0f') + "
+                    "' · Actual ' + (datum.actual_available ? "
+                    "format(datum.actual_sales, '$,.0f') : 'not reported')"
+                )
+            )
+            .mark_text(
+                align="center",
+                baseline="top",
+                color=INK,
+                fontSize=12,
+                fontWeight=600,
+                stroke="#F7F4EC",
+                strokeWidth=4,
+            )
+            .encode(
+                x=alt.XValue(alt.ExprRef(expr="width / 2")),
+                y=alt.YValue(8),
+                text=alt.Text("tap_detail:N"),
+            )
+        )
+        layers.extend(
+            [
+                tap_column,
+                selected_rule,
+                selected_forecast,
+                selected_actual,
+                selected_label,
+            ]
+        )
     chart = (
         alt.layer(*layers)
         .properties(height=285)
