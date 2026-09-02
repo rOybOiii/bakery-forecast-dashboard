@@ -135,6 +135,83 @@ def percent(value: float) -> str:
     return f"{value:.1f}%" if pd.notna(value) else "—"
 
 
+FORECAST_RANGE_FIELDS = {
+    "95%": ("q025", "q975"),
+    "90%": ("q05", "q95"),
+    "60%": ("q20", "q80"),
+    "50%": ("q25", "q75"),
+    "30%": ("q35", "q65"),
+}
+
+
+def short_day(value) -> str:
+    return pd.Timestamp(value).strftime("%b %d").replace(" 0", " ")
+
+
+def mobile_forecast_inspector(
+    frame: pd.DataFrame,
+    ranges: list[str],
+    *,
+    key: str,
+) -> None:
+    """Reliable native mobile control for inspecting a forecast day."""
+
+    options = [pd.Timestamp(value).date() for value in frame["target_date"]]
+    selected = st.select_slider(
+        "Inspect a forecast day",
+        options=options,
+        value=options[0],
+        format_func=short_day,
+        key=key,
+        help="Move the selector to see one day's forecast details.",
+    )
+    row = frame.loc[frame["target_date"].dt.date.eq(selected)].iloc[0]
+    with st.container(border=True):
+        st.markdown(f"**{pd.Timestamp(selected):%A, %B %-d}**")
+        st.metric("Best estimate", money(row["median"]))
+        for label in ("95%", "90%", "60%", "50%", "30%"):
+            if label not in ranges:
+                continue
+            lower, upper = FORECAST_RANGE_FIELDS[label]
+            st.caption(
+                f"{label} plausible range: {money(row[lower])}–{money(row[upper])}"
+            )
+
+
+def mobile_performance_inspector(frame: pd.DataFrame, *, key: str) -> None:
+    """Reliable native mobile control for inspecting a recently scored day."""
+
+    options = [pd.Timestamp(value).date() for value in frame["target_date"]]
+    selected = st.select_slider(
+        "Inspect a recent day",
+        options=options,
+        value=options[-1],
+        format_func=short_day,
+        key=key,
+        help="Move the selector to compare forecast and reported sales.",
+    )
+    row = frame.loc[frame["target_date"].dt.date.eq(selected)].iloc[0]
+    actual_available = bool(row["actual_available"]) and pd.notna(row["actual_sales"])
+    with st.container(border=True):
+        st.markdown(f"**{pd.Timestamp(selected):%A, %B %-d}**")
+        forecast_column, actual_column = st.columns(2)
+        forecast_column.metric("Forecast", money(row["median"]))
+        actual_column.metric(
+            "Actual",
+            money(row["actual_sales"]) if actual_available else "Not reported",
+        )
+        if actual_available:
+            miss = abs(float(row["actual_sales"]) - float(row["median"]))
+            error_rate = (
+                miss / abs(float(row["actual_sales"])) * 100
+                if float(row["actual_sales"]) != 0
+                else float("nan")
+            )
+            st.caption(
+                f"Absolute miss: {money(miss)} · Daily error rate: {percent(error_rate)}"
+            )
+
+
 bundle = dashboard_bundle((BUNDLE_DIR / "validation.json").stat().st_mtime_ns)
 mobile_request = is_mobile_request()
 
@@ -236,8 +313,13 @@ st.altair_chart(
 )
 if mobile_request:
     st.caption(
-        "The 14-day view is fixed on touch devices. Tap a date marker to see its "
-        "estimate and the plausible ranges currently selected above."
+        "The 14-day view is fixed on touch devices. Use the day selector below for "
+        "reliable forecast details."
+    )
+    mobile_forecast_inspector(
+        future,
+        ranges,
+        key=f"mobile_future_day_{restaurant}",
     )
 else:
     st.caption(
@@ -263,8 +345,12 @@ with left:
     )
     if mobile_request:
         st.caption(
-            "The 14-day view is fixed on touch devices. Tap a date marker to compare "
-            "forecast and actual sales."
+            "The 14-day view is fixed on touch devices. Use the day selector below to "
+            "compare forecast and actual sales."
+        )
+        mobile_performance_inspector(
+            recent,
+            key=f"mobile_recent_day_{restaurant}",
         )
     else:
         st.caption(
@@ -342,14 +428,41 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
         value=False,
         help="This enlarges only the actual-versus-expected sales chart.",
     )
-    selected_start, selected_end = history_window_control(
-        minimum=history_min,
-        maximum=history_max,
-        initial_start=initial_start,
-        window_days=(history_max - initial_start).days,
-        key=f"manager_history_window_{history_months}_month",
-        compact=mobile_request,
-    )
+    window_days = (history_max - initial_start).days
+    if mobile_request:
+        maximum_start = max(history_min, history_max - timedelta(days=window_days))
+        selected_start = st.slider(
+            "Start of the one-month history window",
+            min_value=history_min,
+            max_value=maximum_start,
+            value=initial_start,
+            step=timedelta(days=1),
+            format="MMM D, YYYY",
+            key=f"mobile_history_start_{restaurant}",
+            help="Move this native date slider to review an earlier or later month.",
+        )
+        selected_end = min(
+            history_max,
+            selected_start + timedelta(days=window_days),
+        )
+        st.markdown(
+            (
+                '<div style="text-align:center; line-height:1.15; margin:-0.35rem 0 0.5rem;">'
+                f"<strong>{selected_start:%b %-d, %Y}</strong><br>"
+                "–<br>"
+                f"<strong>{selected_end:%b %-d, %Y}</strong>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        selected_start, selected_end = history_window_control(
+            minimum=history_min,
+            maximum=history_max,
+            initial_start=initial_start,
+            window_days=window_days,
+            key="manager_history_window_4_month",
+        )
     st.altair_chart(
         history_review_chart(
             historical_sales,
@@ -367,10 +480,15 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
         "Shaded periods mark detected events or longer shifts. These are historical "
         "model estimates, not forecasts that were previously delivered to a manager. "
         "Faint extensions show uncertain event boundaries. A sales shift is a longer period "
-        "that behaved differently from the surrounding baseline. Drag the highlighted "
-        f"{'one-month' if mobile_request else 'four-month'} window along the compact "
-        "navigator above the charts to review earlier or later history; the charts update "
-        "when you release it."
+        "that behaved differently from the surrounding baseline. "
+        + (
+            "Move the one-month date slider above the charts to review earlier or later "
+            "history."
+            if mobile_request
+            else "Drag the highlighted four-month window along the compact navigator "
+            "above the charts to review earlier or later history; the charts update when "
+            "you release it."
+        )
     )
 
 st.divider()
