@@ -21,7 +21,9 @@ def test_public_bundle_loads_and_is_complete():
     assert len(aggregate) == 14
     assert aggregate[["q025", "q05", "q25", "q75", "q95", "q975"]].notna().all().all()
     assert len(recent_rows(bundle, "downtown")) == 14
-    assert len(history_rows(bundle, "downtown")) > 300
+    history = history_rows(bundle, "downtown")
+    assert len(history) > 300
+    assert history["baseline_median"].notna().all()
     assert restaurant_summary(bundle, "all")["forecast_14_day_total"] > 0
 
 

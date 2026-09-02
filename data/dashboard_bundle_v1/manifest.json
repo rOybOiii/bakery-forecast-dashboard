@@ -1,6 +1,6 @@
 {
   "contract_version": "dashboard_bundle_v1",
-  "generated_at": "2026-09-01T20:15:56.839699+00:00",
+  "generated_at": "2026-09-02T17:16:10.735097+00:00",
   "synthetic": true,
   "manager_dashboard_v1": true,
   "units": "dollars",
@@ -16,7 +16,8 @@
   "shared_forecast_end": "2025-03-14",
   "current_future_actuals_withheld": true,
   "historical_missing_days": "NaN; never zero-filled",
-  "historical_model_estimate": "one-step-ahead Kalman prediction from the current-origin fitted model; not an archived forecast issued on each historical date",
+  "historical_model_estimate": "one-step-ahead Kalman prediction from the current-origin fitted support-preserving CPD+ERP model; not an archived forecast issued on each historical date",
+  "historical_baseline_estimate": "one-step-ahead Kalman prediction from the separately fitted Forecast 1 model with no CPD or ERP inputs, using the same current origin",
   "forecast_intervals": {
     "95_percent": [
       "q025",

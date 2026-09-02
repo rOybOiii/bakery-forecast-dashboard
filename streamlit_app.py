@@ -502,7 +502,9 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
         width="stretch",
     )
     st.caption(
-        "Orange is actual sales; green is the model's one-step-ahead expectation. "
+        "Orange is actual sales; dark green is Forecast without detected events or "
+        "sales shifts; light green is Forecast after CPD and ERP explain those unusual "
+        "periods. "
         "Shaded periods mark detected events or longer shifts. These are historical "
         "model estimates, not forecasts that were previously delivered to a manager. "
         "Faint extensions show uncertain event boundaries. A sales shift is a longer period "

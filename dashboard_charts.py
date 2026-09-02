@@ -8,6 +8,7 @@ import pandas as pd
 
 INK = "#1D2A24"
 GREEN = "#2F6B55"
+ADJUSTED_GREEN = "#8FB5A4"
 TERRACOTTA = "#D56A4A"
 GOLD = "#D9A441"
 MUTED = "#768078"
@@ -275,7 +276,10 @@ def _history_hover_frame(sales: pd.DataFrame) -> pd.DataFrame:
     """Add manager-friendly, nearest-day tooltip content to history rows."""
 
     frame = sales.copy()
-    frame["expected_hover"] = frame["median"].map(
+    frame["baseline_hover"] = frame["baseline_median"].map(
+        lambda value: f"${value:,.0f}" if pd.notna(value) else "Not available"
+    )
+    frame["adjusted_hover"] = frame["median"].map(
         lambda value: f"${value:,.0f}" if pd.notna(value) else "Not available"
     )
     frame["actual_hover"] = frame["actual_sales"].map(
@@ -292,6 +296,7 @@ def _history_y_domain(sales: pd.DataFrame) -> list[float]:
     values = pd.concat(
         [
             sales["median"],
+            sales["baseline_median"],
             sales.loc[actual_mask, "actual_sales"],
         ],
         ignore_index=True,
@@ -383,7 +388,25 @@ def history_review_chart(
         zero=False,
         nice=True,
     )
-    expected_line = (
+    adjusted_line = (
+        alt.Chart(visible_sales)
+        .mark_line(
+            color=ADJUSTED_GREEN,
+            strokeWidth=2.5,
+            strokeCap="round",
+            strokeJoin="round",
+            clip=True,
+        )
+        .encode(
+            x=detail_x,
+            y=alt.Y(
+                "median:Q",
+                axis=_currency_axis(),
+                scale=history_y_scale,
+            ),
+        )
+    )
+    baseline_line = (
         alt.Chart(visible_sales)
         .mark_line(
             color=GREEN,
@@ -395,7 +418,7 @@ def history_review_chart(
         .encode(
             x=detail_x,
             y=alt.Y(
-                "median:Q",
+                "baseline_median:Q",
                 axis=_currency_axis(),
                 scale=history_y_scale,
             ),
@@ -439,9 +462,20 @@ def history_review_chart(
         hover_base.transform_filter(nearest_day)
         .mark_rule(color=MUTED, opacity=0.42, strokeWidth=1)
     )
-    expected_hover_point = (
+    baseline_hover_point = (
         hover_base.transform_filter(nearest_day)
         .mark_point(color=GREEN, filled=True, size=58)
+        .encode(
+            y=alt.Y(
+                "baseline_median:Q",
+                axis=_currency_axis(),
+                scale=history_y_scale,
+            )
+        )
+    )
+    adjusted_hover_point = (
+        hover_base.transform_filter(nearest_day)
+        .mark_point(color=ADJUSTED_GREEN, filled=True, size=52)
         .encode(
             y=alt.Y(
                 "median:Q",
@@ -466,13 +500,20 @@ def history_review_chart(
         hover_base.mark_point(opacity=0)
         .encode(
             y=alt.Y(
-                "median:Q",
+                "baseline_median:Q",
                 axis=_currency_axis(),
                 scale=history_y_scale,
             ),
             tooltip=[
                 alt.Tooltip("target_date:T", title="Date", format="%A, %b %d, %Y"),
-                alt.Tooltip("expected_hover:N", title="Expected sales"),
+                alt.Tooltip(
+                    "baseline_hover:N",
+                    title="Forecast without unusual periods",
+                ),
+                alt.Tooltip(
+                    "adjusted_hover:N",
+                    title="Forecast after explaining unusual periods",
+                ),
                 alt.Tooltip("actual_hover:N", title="Actual sales"),
             ],
         )
@@ -480,10 +521,12 @@ def history_review_chart(
     )
     layers.extend(
         [
-            expected_line,
+            adjusted_line,
+            baseline_line,
             actual_line,
             hover_rule,
-            expected_hover_point,
+            baseline_hover_point,
+            adjusted_hover_point,
             actual_hover_point,
             hover_targets,
         ]

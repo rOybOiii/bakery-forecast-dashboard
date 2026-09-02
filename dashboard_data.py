@@ -41,6 +41,10 @@ def load_bundle(bundle_dir: str | Path) -> DashboardBundle:
         root / "daily_forecasts.csv",
         parse_dates=["forecast_origin", "target_date"],
     )
+    if "baseline_median" not in daily:
+        raise ValueError(
+            "Daily forecasts do not contain the no-disturbance historical baseline"
+        )
     summaries = pd.read_csv(root / "restaurant_summary.csv")
     disturbances = pd.read_csv(
         root / "disturbances.csv",
