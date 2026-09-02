@@ -115,11 +115,28 @@ def money(value: float) -> str:
     return f"${value:,.0f}" if pd.notna(value) else "—"
 
 
+def is_mobile_request() -> bool:
+    """Use request hints to avoid touch/zoom conflicts on phones and tablets."""
+
+    try:
+        headers = st.context.headers
+    except Exception:
+        return False
+    if str(headers.get("Sec-CH-UA-Mobile", "")).strip() == "?1":
+        return True
+    user_agent = str(headers.get("User-Agent", "")).lower()
+    return any(
+        token in user_agent
+        for token in ("mobile", "android", "iphone", "ipad", "ipod")
+    )
+
+
 def percent(value: float) -> str:
     return f"{value:.1f}%" if pd.notna(value) else "—"
 
 
 bundle = dashboard_bundle((BUNDLE_DIR / "validation.json").stat().st_mtime_ns)
+mobile_request = is_mobile_request()
 
 with st.sidebar:
     st.markdown("### Planning view")
@@ -213,11 +230,20 @@ if restaurant == "all":
         "Combined ranges approximate the four restaurant forecasts as independent; "
         "unmeasured cross-restaurant dependence is not included."
     )
-st.altair_chart(forecast_chart(future, ranges), width="stretch")
-st.caption(
-    "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag vertically "
-    "to pan; double-click to reset."
+st.altair_chart(
+    forecast_chart(future, ranges, allow_y_navigation=not mobile_request),
+    width="stretch",
 )
+if mobile_request:
+    st.caption(
+        "The 14-day view is fixed on touch devices. Tap a date marker to see its "
+        "estimate and the plausible ranges currently selected above."
+    )
+else:
+    st.caption(
+        "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag "
+        "vertically to pan; double-click to reset."
+    )
 
 left, right = st.columns([1.75, 1], gap="large")
 with left:
@@ -228,13 +254,23 @@ with left:
     )
     recent = recent_rows(bundle, restaurant)
     st.altair_chart(
-        recent_performance_chart(recent, show_range=restaurant != "all"),
+        recent_performance_chart(
+            recent,
+            show_range=restaurant != "all",
+            allow_y_navigation=not mobile_request,
+        ),
         width="stretch",
     )
-    st.caption(
-        "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag vertically "
-        "to pan; double-click to reset."
-    )
+    if mobile_request:
+        st.caption(
+            "The 14-day view is fixed on touch devices. Tap a date marker to compare "
+            "forecast and actual sales."
+        )
+    else:
+        st.caption(
+            "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag "
+            "vertically to pan; double-click to reset."
+        )
     observed_days = int(summary["recent_observed_days"])
     if observed_days < 14:
         st.caption(

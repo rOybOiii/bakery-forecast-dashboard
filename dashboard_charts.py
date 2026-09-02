@@ -26,7 +26,11 @@ def _currency_y(field: str) -> alt.Y:
     )
 
 
-def forecast_chart(frame: pd.DataFrame, ranges: list[str]) -> alt.Chart:
+def forecast_chart(
+    frame: pd.DataFrame,
+    ranges: list[str],
+    allow_y_navigation: bool = True,
+) -> alt.Chart:
     """Render nested forecast ranges and the median planning line."""
 
     base = alt.Chart(frame).encode(
@@ -40,40 +44,56 @@ def forecast_chart(frame: pd.DataFrame, ranges: list[str]) -> alt.Chart:
         "50%": ("q25:Q", "q75:Q", GREEN, 0.21),
         "30%": ("q35:Q", "q65:Q", GREEN, 0.27),
     }
+    tap_tooltip = [
+        alt.Tooltip("target_date:T", title="Date", format="%A, %b %d"),
+        alt.Tooltip("median:Q", title="Best estimate", format="$,.0f"),
+    ]
     for label in ("95%", "90%", "60%", "50%", "30%"):
         if label not in ranges:
             continue
         lower, upper, color, opacity = specifications[label]
+        tap_tooltip.extend(
+            [
+                alt.Tooltip(lower, title=f"{label} low", format="$,.0f"),
+                alt.Tooltip(upper, title=f"{label} high", format="$,.0f"),
+            ]
+        )
         layers.append(
             base.mark_area(color=color, opacity=opacity).encode(
                 y=_currency_y(lower),
                 y2=upper,
-                tooltip=[
-                    alt.Tooltip("target_date:T", title="Date", format="%b %d"),
-                    alt.Tooltip(lower, title=f"{label} low", format="$,.0f"),
-                    alt.Tooltip(upper, title=f"{label} high", format="$,.0f"),
-                ],
             )
         )
     layers.append(
-        base.mark_line(color=INK, strokeWidth=3, point=alt.OverlayMarkDef(size=34)).encode(
-            y=_currency_y("median:Q"),
-            tooltip=[
-                alt.Tooltip("target_date:T", title="Date", format="%A, %b %d"),
-                alt.Tooltip("median:Q", title="Best estimate", format="$,.0f"),
-            ],
+        base.mark_line(color=INK, strokeWidth=3, point=alt.OverlayMarkDef(size=42)).encode(
+            y=_currency_y("median:Q")
         )
     )
-    return (
+    # A larger transparent point gives fingers a forgiving target without
+    # changing the visible mark. Keeping the chart's domain fixed prevents a
+    # slightly moving tap from being interpreted as a pan gesture on phones.
+    layers.append(
+        base.mark_point(filled=True, size=625, opacity=0.001).encode(
+            y=_currency_y("median:Q"),
+            tooltip=tap_tooltip,
+        )
+    )
+    chart = (
         alt.layer(*layers)
         .properties(height=340)
-        .interactive(bind_x=False, bind_y=True)
-        .configure_view(stroke=None)
-        .configure_axis(labelColor=MUTED, labelFontSize=12)
+    )
+    if allow_y_navigation:
+        chart = chart.interactive(bind_x=False, bind_y=True)
+    return chart.configure_view(stroke=None).configure_axis(
+        labelColor=MUTED, labelFontSize=12
     )
 
 
-def recent_performance_chart(frame: pd.DataFrame, show_range: bool) -> alt.Chart:
+def recent_performance_chart(
+    frame: pd.DataFrame,
+    show_range: bool,
+    allow_y_navigation: bool = True,
+) -> alt.Chart:
     base = alt.Chart(frame).encode(
         x=alt.X("target_date:T", title=None, axis=alt.Axis(format="%b %-d"))
     )
@@ -83,38 +103,57 @@ def recent_performance_chart(frame: pd.DataFrame, show_range: bool) -> alt.Chart
             base.mark_area(color=GREEN, opacity=0.12).encode(
                 y=_currency_y("q05:Q"),
                 y2="q95:Q",
-                tooltip=[
-                    alt.Tooltip("target_date:T", title="Date", format="%b %d"),
-                    alt.Tooltip("q05:Q", title="90% low", format="$,.0f"),
-                    alt.Tooltip("q95:Q", title="90% high", format="$,.0f"),
-                ],
             )
         )
-    forecast = base.mark_line(color=GREEN, strokeWidth=2.5).encode(
-        y=_currency_y("median:Q"),
-        tooltip=[
-            alt.Tooltip("target_date:T", title="Date", format="%b %d"),
-            alt.Tooltip("median:Q", title="Forecast", format="$,.0f"),
-        ],
+    forecast = base.mark_line(
+        color=GREEN,
+        strokeWidth=2.5,
+        point=alt.OverlayMarkDef(size=34),
+    ).encode(
+        y=_currency_y("median:Q")
     )
     actual = (
         base.transform_filter("datum.actual_available")
         .mark_line(color=TERRACOTTA, strokeWidth=2.5, point=alt.OverlayMarkDef(size=42))
         .encode(
             y=_currency_y("actual_sales:Q"),
-            tooltip=[
-                alt.Tooltip("target_date:T", title="Date", format="%b %d"),
-                alt.Tooltip("actual_sales:Q", title="Actual", format="$,.0f"),
-            ],
         )
     )
-    layers.extend([forecast, actual])
-    return (
+    tap_tooltip = [
+        alt.Tooltip("target_date:T", title="Date", format="%A, %b %d"),
+        alt.Tooltip("median:Q", title="Forecast", format="$,.0f"),
+        alt.Tooltip("actual_sales:Q", title="Actual", format="$,.0f"),
+    ]
+    if show_range:
+        tap_tooltip.extend(
+            [
+                alt.Tooltip("q05:Q", title="90% low", format="$,.0f"),
+                alt.Tooltip("q95:Q", title="90% high", format="$,.0f"),
+            ]
+        )
+    forecast_tap_target = base.mark_point(
+        filled=True, size=625, opacity=0.001
+    ).encode(
+        y=_currency_y("median:Q"),
+        tooltip=tap_tooltip,
+    )
+    actual_tap_target = (
+        base.transform_filter("datum.actual_available")
+        .mark_point(filled=True, size=625, opacity=0.001)
+        .encode(
+            y=_currency_y("actual_sales:Q"),
+            tooltip=tap_tooltip,
+        )
+    )
+    layers.extend([forecast, actual, forecast_tap_target, actual_tap_target])
+    chart = (
         alt.layer(*layers)
         .properties(height=285)
-        .interactive(bind_x=False, bind_y=True)
-        .configure_view(stroke=None)
-        .configure_axis(labelColor=MUTED, labelFontSize=12)
+    )
+    if allow_y_navigation:
+        chart = chart.interactive(bind_x=False, bind_y=True)
+    return chart.configure_view(stroke=None).configure_axis(
+        labelColor=MUTED, labelFontSize=12
     )
 
 
