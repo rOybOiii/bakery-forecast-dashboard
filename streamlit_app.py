@@ -144,27 +144,36 @@ FORECAST_RANGE_FIELDS = {
 }
 
 
-def short_day(value) -> str:
-    return pd.Timestamp(value).strftime("%b %d").replace(" 0", " ")
+def selected_chart_day(event, selection_name: str):
+    """Extract the ISO day emitted by a Streamlit Altair point selection."""
+
+    try:
+        selected = event.selection.get(selection_name, [])
+    except (AttributeError, TypeError):
+        return None
+    if isinstance(selected, list):
+        if not selected or not isinstance(selected[0], dict):
+            return None
+        value = selected[0].get("selection_date")
+    elif isinstance(selected, dict):
+        value = selected.get("selection_date")
+        if isinstance(value, list):
+            value = value[0] if value else None
+    else:
+        return None
+    return pd.Timestamp(value).date() if value else None
 
 
-def mobile_forecast_inspector(
+def mobile_forecast_details(
     frame: pd.DataFrame,
     ranges: list[str],
     *,
-    key: str,
+    selected,
 ) -> None:
-    """Reliable native mobile control for inspecting a forecast day."""
+    """Show details returned by Streamlit's chart-selection event."""
 
-    options = [pd.Timestamp(value).date() for value in frame["target_date"]]
-    selected = st.select_slider(
-        "Inspect a forecast day",
-        options=options,
-        value=options[0],
-        format_func=short_day,
-        key=key,
-        help="Move the selector to see one day's forecast details.",
-    )
+    if selected is None:
+        return
     row = frame.loc[frame["target_date"].dt.date.eq(selected)].iloc[0]
     with st.container(border=True):
         st.markdown(f"**{pd.Timestamp(selected):%A, %B %-d}**")
@@ -178,18 +187,11 @@ def mobile_forecast_inspector(
             )
 
 
-def mobile_performance_inspector(frame: pd.DataFrame, *, key: str) -> None:
-    """Reliable native mobile control for inspecting a recently scored day."""
+def mobile_performance_details(frame: pd.DataFrame, *, selected) -> None:
+    """Show recent performance returned by a chart-selection event."""
 
-    options = [pd.Timestamp(value).date() for value in frame["target_date"]]
-    selected = st.select_slider(
-        "Inspect a recent day",
-        options=options,
-        value=options[-1],
-        format_func=short_day,
-        key=key,
-        help="Move the selector to compare forecast and reported sales.",
-    )
+    if selected is None:
+        return
     row = frame.loc[frame["target_date"].dt.date.eq(selected)].iloc[0]
     actual_available = bool(row["actual_available"]) and pd.notna(row["actual_sales"])
     with st.container(border=True):
@@ -307,21 +309,31 @@ if restaurant == "all":
         "Combined ranges approximate the four restaurant forecasts as independent; "
         "unmeasured cross-restaurant dependence is not included."
     )
-st.altair_chart(
-    forecast_chart(future, ranges, allow_y_navigation=not mobile_request),
-    width="stretch",
-)
 if mobile_request:
-    st.caption(
-        "The 14-day view is fixed on touch devices. Use the day selector below for "
-        "reliable forecast details."
+    forecast_event = st.altair_chart(
+        forecast_chart(future, ranges, allow_y_navigation=False),
+        key=f"mobile_forecast_chart_{restaurant}",
+        width="stretch",
+        on_select="rerun",
+        selection_mode=["forecast_day_selection"],
     )
-    mobile_forecast_inspector(
+    st.caption(
+        "The 14-day view is fixed on touch devices. Tap anywhere above a date to "
+        "inspect that day's forecast."
+    )
+    mobile_forecast_details(
         future,
         ranges,
-        key=f"mobile_future_day_{restaurant}",
+        selected=selected_chart_day(
+            forecast_event,
+            "forecast_day_selection",
+        ),
     )
 else:
+    st.altair_chart(
+        forecast_chart(future, ranges, allow_y_navigation=True),
+        width="stretch",
+    )
     st.caption(
         "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag "
         "vertically to pan; double-click to reset."
@@ -335,24 +347,38 @@ with left:
         unsafe_allow_html=True,
     )
     recent = recent_rows(bundle, restaurant)
-    st.altair_chart(
-        recent_performance_chart(
-            recent,
-            show_range=restaurant != "all",
-            allow_y_navigation=not mobile_request,
-        ),
-        width="stretch",
-    )
     if mobile_request:
+        performance_event = st.altair_chart(
+            recent_performance_chart(
+                recent,
+                show_range=restaurant != "all",
+                allow_y_navigation=False,
+            ),
+            key=f"mobile_performance_chart_{restaurant}",
+            width="stretch",
+            on_select="rerun",
+            selection_mode=["performance_day_selection"],
+        )
         st.caption(
-            "The 14-day view is fixed on touch devices. Use the day selector below to "
+            "The 14-day view is fixed on touch devices. Tap anywhere above a date to "
             "compare forecast and actual sales."
         )
-        mobile_performance_inspector(
+        mobile_performance_details(
             recent,
-            key=f"mobile_recent_day_{restaurant}",
+            selected=selected_chart_day(
+                performance_event,
+                "performance_day_selection",
+            ),
         )
     else:
+        st.altair_chart(
+            recent_performance_chart(
+                recent,
+                show_range=restaurant != "all",
+                allow_y_navigation=True,
+            ),
+            width="stretch",
+        )
         st.caption(
             "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag "
             "vertically to pan; double-click to reset."

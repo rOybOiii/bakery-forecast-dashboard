@@ -26,6 +26,46 @@ def _currency_y(field: str) -> alt.Y:
     )
 
 
+def _mobile_day_selection_layers(
+    frame: pd.DataFrame,
+    *,
+    name: str,
+    color: str,
+) -> list[alt.Chart]:
+    """Full-height daily hit regions for Streamlit's chart-selection API."""
+
+    hit_frame = frame[["target_date"]].drop_duplicates().copy()
+    hit_frame["target_date"] = pd.to_datetime(hit_frame["target_date"])
+    hit_frame["selection_date"] = hit_frame["target_date"].dt.strftime("%Y-%m-%d")
+    hit_frame["hit_start"] = hit_frame["target_date"] - pd.Timedelta(hours=12)
+    hit_frame["hit_end"] = hit_frame["target_date"] + pd.Timedelta(hours=12)
+    selected_day = alt.selection_point(
+        name=name,
+        fields=["selection_date"],
+        on="click",
+        clear=False,
+        toggle=False,
+        empty=False,
+    )
+    hit_base = alt.Chart(hit_frame)
+    selected_band = (
+        hit_base.transform_filter(selected_day)
+        .mark_rect(color=color, opacity=0.08)
+        .encode(x=alt.X("hit_start:T", title=None), x2="hit_end:T")
+    )
+    selected_rule = (
+        hit_base.transform_filter(selected_day)
+        .mark_rule(color=color, opacity=0.65, strokeWidth=1.5)
+        .encode(x=alt.X("target_date:T", title=None))
+    )
+    tap_target = (
+        hit_base.mark_rect(opacity=0.001)
+        .encode(x=alt.X("hit_start:T", title=None), x2="hit_end:T")
+        .add_params(selected_day)
+    )
+    return [selected_band, selected_rule, tap_target]
+
+
 def forecast_chart(
     frame: pd.DataFrame,
     ranges: list[str],
@@ -77,6 +117,14 @@ def forecast_chart(
             base.mark_point(filled=True, size=625, opacity=0.001).encode(
                 y=_currency_y("median:Q"),
                 tooltip=tap_tooltip,
+            )
+        )
+    else:
+        layers.extend(
+            _mobile_day_selection_layers(
+                frame,
+                name="forecast_day_selection",
+                color=INK,
             )
         )
     chart = (
@@ -149,6 +197,14 @@ def recent_performance_chart(
     layers.extend([forecast, actual])
     if allow_y_navigation:
         layers.extend([forecast_tap_target, actual_tap_target])
+    else:
+        layers.extend(
+            _mobile_day_selection_layers(
+                frame,
+                name="performance_day_selection",
+                color=TERRACOTTA,
+            )
+        )
     chart = (
         alt.layer(*layers)
         .properties(height=285)
@@ -266,6 +322,24 @@ def history_review_chart(
         domain=[initial_start.isoformat(), initial_end.isoformat()],
         nice=False,
     )
+    span_days = max(1, (initial_end - initial_start).days)
+    tick_step_days = 7 if span_days <= 45 else 14
+    history_tick_values = [
+        value.to_pydatetime()
+        for value in pd.date_range(
+            initial_start.normalize(),
+            initial_end.normalize(),
+            freq=f"{tick_step_days}D",
+        )
+    ]
+    axis_options = {
+        "format": "%b %-d",
+        "values": history_tick_values,
+        # Keep edge labels inside the scale range. Otherwise fit-x changes
+        # the plot width as differently sized first/last dates appear.
+        "labelBound": True,
+        "labelFlush": True,
+    }
     visible_sales = sales.loc[
         sales["target_date"].between(initial_start, initial_end)
     ]
@@ -277,13 +351,7 @@ def history_review_chart(
         "target_date:T",
         title=None,
         scale=window_scale,
-        axis=alt.Axis(
-            format="%b %-d",
-            # Keep edge labels inside the scale range. Otherwise fit-x changes
-            # the plot width as differently sized first/last dates appear.
-            labelBound=True,
-            labelFlush=True,
-        ),
+        axis=alt.Axis(**axis_options),
     )
     layers: list[alt.Chart] = []
     if not visible_disturbances.empty:
@@ -432,11 +500,7 @@ def history_review_chart(
             "start_lower:T",
             title=None,
             scale=window_scale,
-            axis=alt.Axis(
-                format="%b %Y",
-                labelBound=True,
-                labelFlush=True,
-            ),
+            axis=alt.Axis(**axis_options),
         ),
         x2="end_upper:T",
         y=alt.Y(y_field, title=None),
@@ -456,7 +520,12 @@ def history_review_chart(
     core = alt.Chart(visible_disturbances).mark_bar(
         size=8, cornerRadius=4, clip=True
     ).encode(
-        x=alt.X("start_date:T", scale=window_scale, title=None),
+        x=alt.X(
+            "start_date:T",
+            scale=window_scale,
+            title=None,
+            axis=alt.Axis(**axis_options),
+        ),
         x2="end_date:T",
         y=alt.Y(y_field, title=None),
         color=alt.Color(
@@ -504,7 +573,7 @@ def history_review_chart(
             padding={"left": 0, "right": 0, "top": 0, "bottom": 12},
             usermeta={"embedOptions": {"renderer": "svg"}},
         )
-        .resolve_scale(x="independent", y="independent")
+        .resolve_scale(x="shared", y="independent")
         .configure_view(stroke=None)
         .configure_axis(labelColor=MUTED, labelFontSize=12, grid=False)
     )
