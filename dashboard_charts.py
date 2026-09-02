@@ -93,6 +93,11 @@ def forecast_chart(
         if label not in ranges:
             continue
         lower, upper, color, opacity = specifications[label]
+        range_tooltip = [
+            alt.Tooltip("target_date:T", title="Date", format="%A, %b %d"),
+            alt.Tooltip(lower, title=f"{label} low", format="$,.0f"),
+            alt.Tooltip(upper, title=f"{label} high", format="$,.0f"),
+        ]
         tap_tooltip.extend(
             [
                 alt.Tooltip(lower, title=f"{label} low", format="$,.0f"),
@@ -103,6 +108,7 @@ def forecast_chart(
             base.mark_area(color=color, opacity=opacity).encode(
                 y=_currency_y(lower),
                 y2=upper,
+                tooltip=range_tooltip,
             )
         )
     layers.append(
@@ -153,6 +159,15 @@ def recent_performance_chart(
             base.mark_area(color=GREEN, opacity=0.12).encode(
                 y=_currency_y("q05:Q"),
                 y2="q95:Q",
+                tooltip=[
+                    alt.Tooltip(
+                        "target_date:T",
+                        title="Date",
+                        format="%A, %b %d",
+                    ),
+                    alt.Tooltip("q05:Q", title="90% low", format="$,.0f"),
+                    alt.Tooltip("q95:Q", title="90% high", format="$,.0f"),
+                ],
             )
         )
     forecast = base.mark_line(
