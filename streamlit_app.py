@@ -11,12 +11,14 @@ import streamlit as st
 
 from dashboard_charts import (
     forecast_chart,
+    forecast_replay_chart,
     history_review_chart,
     recent_performance_chart,
 )
 from dashboard_data import (
     RESTAURANT_LABELS,
     disturbance_rows,
+    forecast_replay_history,
     forecast_rows,
     history_rows,
     load_bundle,
@@ -93,6 +95,7 @@ st.markdown(
         padding: 0.72rem 0.85rem;
         margin-bottom: 0.55rem;
     }
+    .finding-card.regime-card { border-left-color: #c39a31; }
     .finding-card strong { color: var(--ink); }
     .finding-card small { color: var(--muted); }
     div[data-testid="stAlert"] { border-radius: 12px; }
@@ -133,6 +136,28 @@ def is_mobile_request() -> bool:
 
 def percent(value: float) -> str:
     return f"{value:.1f}%" if pd.notna(value) else "—"
+
+
+def finding_card(finding, *, regime: bool = False) -> None:
+    """Render one manager-facing event or persistent-regime summary."""
+
+    evidence = escape(str(finding.evidence_label))
+    restaurant_label = escape(str(finding.restaurant_label))
+    direction = escape(str(finding.direction_label))
+    impact = escape(str(finding.impact_label))
+    kind = escape(str(finding.kind_label))
+    duration = escape(str(finding.duration_label))
+    when = f"{finding.start_date:%b %-d}–{finding.end_date:%b %-d, %Y}"
+    card_class = "finding-card regime-card" if regime else "finding-card"
+    st.markdown(
+        f"""
+        <div class="{card_class}">
+          <strong>{restaurant_label}: {direction}</strong><br>
+          <small>{impact}<br>{kind} · {duration} · {when} · {evidence}</small>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 FORECAST_RANGE_FIELDS = {
@@ -339,29 +364,30 @@ else:
         "vertically to pan; double-click to reset."
     )
 
-left, right = st.columns([1.75, 1], gap="large")
-with left:
-    st.markdown('<div class="section-title">How the last forecast performed</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-note"><span style="color:#2f6b55">Forecast</span> compared with <span style="color:#d56a4a">actual sales</span>, using only information available beforehand.</div>',
-        unsafe_allow_html=True,
-    )
-    recent = recent_rows(bundle, restaurant)
+def render_performance_chart(
+    recent: pd.DataFrame,
+    *,
+    key_prefix: str,
+    show_range: bool,
+    height: int,
+) -> None:
+    """Render a forecast-versus-actual chart for desktop or touch devices."""
+
     if mobile_request:
         performance_event = st.altair_chart(
             recent_performance_chart(
                 recent,
-                show_range=restaurant != "all",
+                show_range=show_range,
                 allow_y_navigation=False,
+                height=height,
             ),
-            key=f"mobile_performance_chart_{restaurant}",
+            key=f"{key_prefix}_mobile_performance_chart_{restaurant}",
             width="stretch",
             on_select="rerun",
             selection_mode=["performance_day_selection"],
         )
         st.caption(
-            "The 14-day view is fixed on touch devices. Tap anywhere above a date to "
-            "compare forecast and actual sales."
+            "Tap anywhere above a date to compare the forecast with actual sales."
         )
         mobile_performance_details(
             recent,
@@ -374,65 +400,103 @@ with left:
         st.altair_chart(
             recent_performance_chart(
                 recent,
-                show_range=restaurant != "all",
+                show_range=show_range,
                 allow_y_navigation=True,
+                height=height,
             ),
+            key=f"{key_prefix}_performance_chart_{restaurant}",
             width="stretch",
         )
         st.caption(
-            "The 14-day horizontal view is fixed. Scroll to zoom vertically; drag "
-            "vertically to pan; double-click to reset."
-        )
-    observed_days = int(summary["recent_observed_days"])
-    if observed_days < 14:
-        st.caption(
-            f"Accuracy uses {observed_days} reported days. Missing days were excluded—not treated as zero sales."
+            "Scroll to zoom vertically; drag vertically to pan; double-click to reset."
         )
 
-with right:
-    st.markdown('<div class="section-title">Recent unusual periods</div>', unsafe_allow_html=True)
+
+if restaurant != "all":
+    st.markdown('<div class="section-title">Forecast replay</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-note">Possible events and longer sales shifts found before this forecast.</div>',
+        '<div class="section-note">Go back to a saved forecast and compare what it predicted with what actually happened. The green line and band are frozen as they appeared on the issue date; orange is reported sales. During detected events, the terracotta bridge shows the estimated event contribution above or below the no-event counterfactual.</div>',
         unsafe_allow_html=True,
     )
-    with st.popover(
-        "What do the evidence labels mean?",
-        type="tertiary",
-        icon=":material/help:",
-        key="evidence_guide",
-    ):
+    replay = forecast_replay_history(bundle, restaurant)
+    st.plotly_chart(
+        forecast_replay_chart(
+            replay,
+            disturbance_rows(bundle, restaurant),
+        ),
+        key=f"forecast_replay_chart_{restaurant}",
+        width="stretch",
+        config={
+            "displaylogo": False,
+            "displayModeBar": False,
+            "scrollZoom": False,
+        },
+    )
+    st.caption(
+        f"{replay['forecast_origin'].nunique()} forecast versions span roughly three months. "
+        "Press Play or drag the issue-date control below the chart. Daily historical "
+        "versions are cutoff-only demonstration backfills; the newest version is the "
+        "archived Forecast 2 output. Event and regime bands appear only after a conservative "
+        "demo detection delay. The dashed event line is estimated sales without the event; "
+        "the filled gap to actual sales is the median event effect, with its plausible range "
+        "available on hover. Production replay will replace these approximations with daily "
+        "saved Forecast 2, PPRM, JEAM, and ERP vintages."
+    )
+else:
+    left, right = st.columns([1.75, 1], gap="large")
+    with left:
+        st.markdown('<div class="section-title">How the last forecast performed</div>', unsafe_allow_html=True)
         st.markdown(
-            """
-            **Strong evidence:** Appeared in at least 70% of plausible event histories.
-
-            **Moderate evidence:** Appeared in 35%–69% of plausible event histories.
-
-            **Limited evidence:** Appeared in fewer than 35% of plausible event histories.
-
-            **Selected shift:** A longer sales shift selected for this synthetic demonstration.
-            """
-        )
-    recent_start = recent["target_date"].min()
-    recent_end = recent["target_date"].max()
-    findings = disturbance_rows(bundle, restaurant)
-    findings = findings.loc[
-        findings["end_date"].ge(recent_start)
-        & findings["start_date"].le(recent_end)
-    ].head(4)
-    if findings.empty:
-        st.caption("No unusual periods overlapped these recent 14 days.")
-    for finding in findings.itertuples(index=False):
-        evidence = escape(finding.evidence_label)
-        when = f"{finding.start_date:%b %-d}–{finding.end_date:%b %-d, %Y}"
-        st.markdown(
-            f"""
-            <div class="finding-card">
-              <strong>{finding.restaurant_label}: {finding.direction_label}</strong><br>
-              <small>{finding.impact_label}<br>{finding.kind_label} · {finding.duration_label} · {when} · {evidence}</small>
-            </div>
-            """,
+            '<div class="section-note"><span style="color:#2f6b55">Forecast</span> compared with <span style="color:#d56a4a">actual sales</span>, using only information available beforehand.</div>',
             unsafe_allow_html=True,
         )
+        recent = recent_rows(bundle, restaurant)
+        render_performance_chart(
+            recent,
+            key_prefix="all_restaurants",
+            show_range=False,
+            height=285,
+        )
+        observed_days = int(summary["recent_observed_days"])
+        if observed_days < 14:
+            st.caption(
+                f"Accuracy uses {observed_days} reported days. Missing days were excluded—not treated as zero sales."
+            )
+
+    with right:
+        st.markdown('<div class="section-title">Recent unusual periods</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-note">Possible events and longer sales shifts found before this forecast.</div>',
+            unsafe_allow_html=True,
+        )
+        with st.popover(
+            "What do the evidence labels mean?",
+            type="tertiary",
+            icon=":material/help:",
+            key="evidence_guide",
+        ):
+            st.markdown(
+                """
+                **Strong evidence:** Appeared in at least 70% of plausible model histories.
+
+                **Moderate evidence:** Appeared in 35%–69% of plausible model histories.
+
+                **Limited evidence:** Appeared in fewer than 35% of plausible model histories.
+
+                **Selected shift:** A longer sales shift selected for this synthetic demonstration.
+                """
+            )
+        recent_start = recent["target_date"].min()
+        recent_end = recent["target_date"].max()
+        findings = disturbance_rows(bundle, restaurant)
+        recent_findings = findings.loc[
+            findings["end_date"].ge(recent_start)
+            & findings["start_date"].le(recent_end)
+        ].head(4)
+        if recent_findings.empty:
+            st.caption("No unusual periods overlapped these recent 14 days.")
+        for finding in recent_findings.itertuples(index=False):
+            finding_card(finding, regime=finding.disturbance_type == "regime")
 
 with st.expander("Explore forecast, event, and sales-shift history", expanded=False):
     history = disturbance_rows(bundle, restaurant)
@@ -503,8 +567,8 @@ with st.expander("Explore forecast, event, and sales-shift history", expanded=Fa
     )
     st.caption(
         "Orange is actual sales; dark green is Forecast without detected events or "
-        "sales shifts; light green is Forecast after CPD and ERP explain those unusual "
-        "periods. "
+        "sales shifts; light green is Forecast after modeled events and persistent "
+        "terrain are included. "
         "Shaded periods mark detected events or longer shifts. These are historical "
         "model estimates, not forecasts that were previously delivered to a manager. "
         "Faint extensions show uncertain event boundaries. A sales shift is a longer period "

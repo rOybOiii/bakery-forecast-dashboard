@@ -53,5 +53,13 @@
   "aggregate_interval_method": "Monte Carlo sum after independently pairing draws from the four restaurant posterior marginals",
   "aggregate_interval_caveat": "Cross-restaurant posterior dependence is not identified by the four separate Forecast fits and is not represented in these combined bands.",
   "change_since_previous_forecast_status": "withheld: the prior origin does not overlap enough of the current 14-day horizon for a fair comparison",
-  "streamlit_runs_inference": false
+  "streamlit_runs_inference": false,
+  "forecast_replay": {
+    "file": "forecast_replay.csv",
+    "origins_per_restaurant": 91,
+    "backfill_frequency": "daily",
+    "backfill_method": "cutoff-only recency-weighted weekday forecast for interface qualification; replace with archived Forecast 2 vintages in production",
+    "uses_future_information": false,
+    "current_vintage_source": "archived Forecast 2 output"
+  }
 }

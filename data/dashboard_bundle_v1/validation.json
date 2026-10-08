@@ -13,5 +13,7 @@
   "daily_rows": 2265,
   "disturbance_rows": 25,
   "validated_at": "2026-09-02T17:16:10.735078+00:00",
-  "status": "valid"
+  "status": "valid",
+  "forecast_replay_rows": 5096,
+  "forecast_replay_origins": 91
 }

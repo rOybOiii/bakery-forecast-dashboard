@@ -31,6 +31,8 @@ def main() -> None:
     parser.add_argument("--drag-cycles", type=int, default=1)
     parser.add_argument("--exercise-hover", action="store_true")
     parser.add_argument("--exercise-evidence", action="store_true")
+    parser.add_argument("--exercise-replay", action="store_true")
+    parser.add_argument("--replay-duration-ms", type=int, default=2200)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -114,6 +116,34 @@ def main() -> None:
                 ),
                 2,
             )
+
+        if args.exercise_replay:
+            replay_chart = page.locator("[data-testid='stPlotlyChart']").first
+            replay_chart.wait_for(state="visible")
+            current_value = replay_chart.get_by_text(
+                "Forecast issued:", exact=False
+            ).first
+            current_value.wait_for(state="visible")
+            before_play = current_value.text_content()
+            metric_annotations = replay_chart.locator(".annotation-text")
+            metrics_before_play = metric_annotations.all_text_contents()
+            replay_chart.get_by_text("Play", exact=False).click(force=True)
+            page.wait_for_timeout(args.replay_duration_ms)
+            after_play = current_value.text_content()
+            metrics_after_play = metric_annotations.all_text_contents()
+            replay_chart.get_by_text("Pause", exact=False).click(force=True)
+            result["replay_before_play"] = before_play
+            result["replay_after_play"] = after_play
+            result["replay_advanced"] = before_play != after_play
+            result["replay_metrics_before_play"] = metrics_before_play
+            result["replay_metrics_after_play"] = metrics_after_play
+            result["replay_metrics_advanced"] = (
+                metrics_before_play != metrics_after_play
+            )
+            if not result["replay_advanced"]:
+                raise SystemExit("Forecast replay did not advance after Play")
+            if not result["replay_metrics_advanced"]:
+                raise SystemExit("Forecast replay metrics did not advance after Play")
 
         if args.exercise_slider and plot_box:
             navigator_selection = expander.locator(".history-selection")
@@ -303,8 +333,15 @@ def main() -> None:
         print(f"history_screenshot={element_output.resolve()}")
         browser.close()
 
-        if page_errors:
-            raise SystemExit(f"Browser errors: {page_errors}")
+        meaningful_page_errors = [
+            error
+            for error in page_errors
+            # Plotly rejects its in-flight animation promise with an undefined
+            # value when Pause intentionally interrupts playback.
+            if not (args.exercise_replay and error == "undefined")
+        ]
+        if meaningful_page_errors:
+            raise SystemExit(f"Browser errors: {meaningful_page_errors}")
         if result.get("right_overflow_px", 0) > args.max_overflow:
             raise SystemExit(
                 f"History chart overflowed by {result['right_overflow_px']} px"

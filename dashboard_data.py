@@ -21,6 +21,7 @@ RESTAURANT_LABELS = {
 @dataclass(frozen=True)
 class DashboardBundle:
     daily: pd.DataFrame
+    replay: pd.DataFrame
     summaries: pd.DataFrame
     disturbances: pd.DataFrame
     manifest: dict[str, object]
@@ -45,6 +46,10 @@ def load_bundle(bundle_dir: str | Path) -> DashboardBundle:
         raise ValueError(
             "Daily forecasts do not contain the no-disturbance historical baseline"
         )
+    replay = pd.read_csv(
+        root / "forecast_replay.csv",
+        parse_dates=["forecast_origin", "target_date"],
+    )
     summaries = pd.read_csv(root / "restaurant_summary.csv")
     disturbances = pd.read_csv(
         root / "disturbances.csv",
@@ -62,9 +67,16 @@ def load_bundle(bundle_dir: str | Path) -> DashboardBundle:
         raise ValueError("The bundle does not contain the expected restaurant views")
     if set(daily["restaurant"]) != expected:
         raise ValueError("Daily forecasts do not contain the expected restaurant views")
+    if set(replay["restaurant"]) != expected - {"all"}:
+        raise ValueError("Forecast replay does not contain the four restaurant views")
+    replay_counts = replay.groupby(["restaurant", "forecast_origin"]).size()
+    if not replay_counts.eq(14).all():
+        raise ValueError("Each replay vintage must contain exactly 14 forecast days")
     if not set(disturbances["restaurant"]).issubset(expected - {"all"}):
         raise ValueError("Disturbance history contains an unknown restaurant")
-    return DashboardBundle(daily, summaries, disturbances, manifest, validation)
+    if int(validation.get("forecast_replay_rows", -1)) != len(replay):
+        raise ValueError("Forecast replay row count does not match validation")
+    return DashboardBundle(daily, replay, summaries, disturbances, manifest, validation)
 
 
 def restaurant_summary(bundle: DashboardBundle, restaurant: str) -> pd.Series:
@@ -86,6 +98,49 @@ def recent_rows(bundle: DashboardBundle, restaurant: str) -> pd.DataFrame:
         bundle.daily["restaurant"].eq(restaurant)
         & bundle.daily["period"].eq("recent_performance")
     ].sort_values("target_date")
+
+
+def forecast_replay_origins(
+    bundle: DashboardBundle, restaurant: str
+) -> list[pd.Timestamp]:
+    """Return the forecast issue dates preserved in the public bundle.
+
+    The current bundle carries one evaluated prior forecast and the current
+    forward forecast. Future publishers can append additional vintages without
+    requiring a dashboard code change.
+    """
+
+    rows = bundle.replay.loc[bundle.replay["restaurant"].eq(restaurant)]
+    return sorted(pd.Timestamp(value) for value in rows["forecast_origin"].unique())
+
+
+def forecast_replay_rows(
+    bundle: DashboardBundle,
+    restaurant: str,
+    forecast_origin: pd.Timestamp,
+) -> pd.DataFrame:
+    """Return one saved forecast exactly as published for replay."""
+
+    origin = pd.Timestamp(forecast_origin)
+    rows = bundle.replay.loc[
+        bundle.replay["restaurant"].eq(restaurant)
+        & bundle.replay["forecast_origin"].eq(origin)
+    ].sort_values("target_date")
+    if rows.empty:
+        raise ValueError(
+            f"No saved forecast for {restaurant} issued {origin.date()}"
+        )
+    return rows.copy()
+
+
+def forecast_replay_history(
+    bundle: DashboardBundle, restaurant: str
+) -> pd.DataFrame:
+    """Return every saved replay vintage for one restaurant."""
+
+    return bundle.replay.loc[
+        bundle.replay["restaurant"].eq(restaurant)
+    ].sort_values(["forecast_origin", "target_date"]).copy()
 
 
 def history_rows(bundle: DashboardBundle, restaurant: str) -> pd.DataFrame:

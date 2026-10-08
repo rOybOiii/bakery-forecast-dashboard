@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import altair as alt
 import pandas as pd
+import plotly.graph_objects as go
 
 
 INK = "#1D2A24"
@@ -149,6 +152,7 @@ def recent_performance_chart(
     frame: pd.DataFrame,
     show_range: bool,
     allow_y_navigation: bool = True,
+    height: int = 285,
 ) -> alt.Chart:
     base = alt.Chart(frame).encode(
         x=alt.X("target_date:T", title=None, axis=alt.Axis(format="%b %-d"))
@@ -223,13 +227,442 @@ def recent_performance_chart(
         )
     chart = (
         alt.layer(*layers)
-        .properties(height=285)
+        .properties(height=height)
     )
     if allow_y_navigation:
         chart = chart.interactive(bind_x=False, bind_y=True)
     return chart.configure_view(stroke=None).configure_axis(
         labelColor=MUTED, labelFontSize=12
     )
+
+
+def forecast_replay_chart(
+    frame: pd.DataFrame,
+    disturbances: pd.DataFrame | None = None,
+) -> go.Figure:
+    """Animated, fixed-window replay of saved 14-day forecast vintages."""
+
+    frame = frame.sort_values(["forecast_origin", "target_date"]).copy()
+    origins = list(frame["forecast_origin"].drop_duplicates())
+    if not origins:
+        raise ValueError("Forecast replay requires at least one saved vintage")
+
+    actual = (
+        frame.loc[frame["actual_available"].astype(bool)]
+        .dropna(subset=["actual_sales"])
+        .sort_values(["target_date", "forecast_origin"])
+        .drop_duplicates("target_date", keep="last")
+    )
+    disturbance_frame = (
+        disturbances.copy() if disturbances is not None else pd.DataFrame()
+    )
+    event_counterfactual_values: list[float] = []
+    if not disturbance_frame.empty:
+        actual_by_date = actual.set_index("target_date")["actual_sales"]
+        for row in disturbance_frame.loc[
+            disturbance_frame["disturbance_type"].eq("event")
+        ].itertuples(index=False):
+            event_dates = pd.date_range(row.start_date, row.end_date, freq="D")
+            observed = actual_by_date.reindex(event_dates).dropna()
+            event_counterfactual_values.extend(
+                (observed - float(row.effect_median_dollars_per_day)).tolist()
+            )
+    values = pd.concat(
+        [
+            frame["q05"],
+            frame["q95"],
+            actual["actual_sales"],
+            pd.Series(event_counterfactual_values, dtype=float),
+        ],
+        ignore_index=True,
+    ).dropna()
+    value_low = float(values.min())
+    value_high = float(values.max())
+    padding = max(1.0, (value_high - value_low) * 0.08)
+    y_range = [value_low - padding, value_high + padding]
+
+    def replay_window(origin: pd.Timestamp) -> list[pd.Timestamp]:
+        """Four weeks: two observed weeks, then the 14-day forecast."""
+
+        return [
+            pd.Timestamp(origin) - timedelta(days=14),
+            pd.Timestamp(origin) + timedelta(days=14),
+        ]
+
+    def known_disturbance_shapes(origin: pd.Timestamp) -> list[dict[str, object]]:
+        """Show only disturbance evidence plausibly available by this cutoff."""
+
+        if disturbance_frame.empty:
+            return []
+        window_start, _ = replay_window(origin)
+        shapes: list[dict[str, object]] = []
+        for row in disturbance_frame.itertuples(index=False):
+            if row.disturbance_type == "event":
+                evidence_available = pd.Timestamp(row.end_upper)
+                color = "rgba(213,106,74,0.05)"
+            else:
+                evidence_available = pd.Timestamp(row.start_upper) + timedelta(days=7)
+                color = "rgba(217,164,65,0.11)"
+            if evidence_available > origin:
+                continue
+            start = max(pd.Timestamp(row.start_date), window_start)
+            end = min(pd.Timestamp(row.end_date), origin)
+            if end < start:
+                continue
+            shapes.append(
+                {
+                    "type": "rect",
+                    "xref": "x",
+                    "yref": "paper",
+                    "x0": start,
+                    "x1": end + timedelta(days=1),
+                    "y0": 0,
+                    "y1": 1,
+                    "fillcolor": color,
+                    "line": {"width": 0},
+                    "layer": "below",
+                }
+            )
+        return shapes
+
+    def replay_metric_annotations(origin: pd.Timestamp) -> list[dict[str, object]]:
+        """Metrics for exactly the selected vintage's 14-day horizon."""
+
+        vintage = frame.loc[frame["forecast_origin"].eq(origin)]
+        reported = vintage.loc[
+            vintage["actual_available"].astype(bool)
+            & vintage["actual_sales"].notna()
+        ].copy()
+        reported_days = len(reported)
+        if reported_days:
+            average_miss = float(
+                (reported["actual_sales"] - reported["median"]).abs().mean()
+            )
+            coverage = float(
+                reported["actual_sales"].between(
+                    reported["q05"], reported["q95"]
+                ).mean()
+            )
+            miss_value = f"${average_miss:,.0f}"
+            coverage_value = f"{coverage:.1%}"
+        else:
+            miss_value = "Waiting"
+            coverage_value = "Waiting"
+
+        labels = [
+            (
+                "Selected forecast",
+                pd.Timestamp(origin).strftime("%b %-d, %Y"),
+                "14-day horizon",
+            ),
+            (
+                "14-day average miss",
+                miss_value,
+                f"{reported_days} of 14 outcomes reported",
+            ),
+            (
+                "Inside 90% range",
+                coverage_value,
+                f"{reported_days} of 14 outcomes reported",
+            ),
+        ]
+        return [
+            {
+                "xref": "paper",
+                "yref": "paper",
+                "x": x,
+                "y": 1.22,
+                "xanchor": "center",
+                "yanchor": "middle",
+                "showarrow": False,
+                "align": "left",
+                "width": 250,
+                "bordercolor": "#DED8CB",
+                "borderwidth": 1,
+                "borderpad": 12,
+                "bgcolor": "rgba(255,253,248,0.98)",
+                "font": {"color": INK, "size": 13},
+                "text": (
+                    f"{title}<br><b><span style='font-size:22px'>{value}</span></b>"
+                    f"<br><span style='color:{MUTED};font-size:11px'>{detail}</span>"
+                ),
+            }
+            for x, (title, value, detail) in zip((0.14, 0.50, 0.86), labels)
+        ]
+
+    def known_event_effect_traces(origin: pd.Timestamp) -> list[go.Scatter]:
+        """Show JEAM's estimated event contribution once it was knowable."""
+
+        counterfactual_x: list[object] = []
+        counterfactual_y: list[float | None] = []
+        event_actual_x: list[object] = []
+        event_actual_y: list[float | None] = []
+        event_details: list[list[object] | None] = []
+        window_start, _ = replay_window(origin)
+        actual_by_date = actual.set_index("target_date")["actual_sales"]
+        if not disturbance_frame.empty:
+            events = disturbance_frame.loc[
+                disturbance_frame["disturbance_type"].eq("event")
+            ]
+            for row in events.itertuples(index=False):
+                if pd.Timestamp(row.end_upper) > origin:
+                    continue
+                start = max(pd.Timestamp(row.start_date), window_start)
+                end = min(pd.Timestamp(row.end_date), origin)
+                if end < start:
+                    continue
+                event_dates = pd.date_range(start, end, freq="D")
+                observed = actual_by_date.reindex(event_dates).dropna()
+                if observed.empty:
+                    continue
+                median_effect = float(row.effect_median_dollars_per_day)
+                low_effect = float(row.effect_low_dollars_per_day)
+                high_effect = float(row.effect_high_dollars_per_day)
+                counterfactual = observed - median_effect
+                details = [
+                    [median_effect, low_effect, high_effect, row.support_probability]
+                    for _ in observed
+                ]
+                counterfactual_x.extend([*observed.index, None])
+                counterfactual_y.extend([*counterfactual.tolist(), None])
+                event_actual_x.extend([*observed.index, None])
+                event_actual_y.extend([*observed.tolist(), None])
+                event_details.extend([*details, None])
+
+        return [
+            go.Scatter(
+                x=counterfactual_x,
+                y=counterfactual_y,
+                mode="lines",
+                line={"color": "#8B6254", "width": 2, "dash": "dash"},
+                name="Estimated without event",
+                connectgaps=False,
+                hovertemplate=(
+                    "%{x|%A, %b %d}<br>Estimated without event: $%{y:,.0f}"
+                    "<extra></extra>"
+                ),
+            ),
+            go.Scatter(
+                x=event_actual_x,
+                y=event_actual_y,
+                mode="lines",
+                line={"color": "rgba(213,106,74,0)", "width": 0},
+                fill="tonexty",
+                fillcolor="rgba(213,106,74,0.25)",
+                name="Estimated event effect",
+                connectgaps=False,
+                customdata=event_details,
+                hovertemplate=(
+                    "%{x|%A, %b %d}<br>Estimated event effect: "
+                    "$%{customdata[0]:+,.0f} per day"
+                    "<br>Plausible range: $%{customdata[1]:+,.0f} to "
+                    "$%{customdata[2]:+,.0f}"
+                    "<br>Event support: %{customdata[3]:.0%}<extra></extra>"
+                ),
+            ),
+        ]
+
+    def traces(origin: pd.Timestamp) -> list[go.Scatter]:
+        vintage = frame.loc[frame["forecast_origin"].eq(origin)]
+        kind = str(vintage["vintage_kind"].iloc[0])
+        source_label = (
+            "Archived Forecast 2"
+            if kind == "archived_forecast_2"
+            else "Cutoff-only demo backfill"
+        )
+        customdata = [[source_label]] * len(vintage)
+        return [
+            go.Scatter(
+                x=vintage["target_date"],
+                y=vintage["q05"],
+                mode="lines",
+                line={"width": 0, "color": "rgba(47,107,85,0)"},
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            go.Scatter(
+                x=vintage["target_date"],
+                y=vintage["q95"],
+                mode="lines",
+                line={"width": 0, "color": "rgba(47,107,85,0)"},
+                fill="tonexty",
+                fillcolor="rgba(47,107,85,0.16)",
+                name="90% forecast range",
+                customdata=customdata,
+                hovertemplate=(
+                    "%{x|%A, %b %d}<br>90% high: $%{y:,.0f}"
+                    "<br>%{customdata[0]}<extra></extra>"
+                ),
+            ),
+            go.Scatter(
+                x=vintage["target_date"],
+                y=vintage["median"],
+                mode="lines+markers",
+                line={"color": GREEN, "width": 3},
+                marker={"color": GREEN, "size": 7},
+                name="Forecast",
+                customdata=customdata,
+                hovertemplate=(
+                    "%{x|%A, %b %d}<br>Forecast: $%{y:,.0f}"
+                    "<br>%{customdata[0]}<extra></extra>"
+                ),
+            ),
+            go.Scatter(
+                x=[origin, origin],
+                y=y_range,
+                mode="lines",
+                line={"color": MUTED, "width": 1.5, "dash": "dot"},
+                name="Issue date",
+                hovertemplate=(
+                    f"Forecast issued {pd.Timestamp(origin):%b %-d, %Y}"
+                    "<extra></extra>"
+                ),
+            ),
+        ]
+
+    initial_origin = origins[0]
+    figure = go.Figure(
+        data=[
+            go.Scatter(
+                x=actual["target_date"],
+                y=actual["actual_sales"],
+                mode="lines+markers",
+                line={"color": TERRACOTTA, "width": 2.5},
+                marker={"color": TERRACOTTA, "size": 6},
+                name="Actual sales",
+                hovertemplate=(
+                    "%{x|%A, %b %d}<br>Actual sales: $%{y:,.0f}<extra></extra>"
+                ),
+            ),
+            *known_event_effect_traces(pd.Timestamp(initial_origin)),
+            *traces(initial_origin),
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line={"color": "rgba(213,106,74,0.35)", "width": 9},
+                name="Detected event",
+                hoverinfo="skip",
+            ),
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line={"color": "rgba(217,164,65,0.35)", "width": 9},
+                name="Detected regime",
+                hoverinfo="skip",
+            ),
+        ],
+        frames=[
+            go.Frame(
+                name=pd.Timestamp(origin).date().isoformat(),
+                data=[
+                    *known_event_effect_traces(pd.Timestamp(origin)),
+                    *traces(origin),
+                ],
+                traces=[1, 2, 3, 4, 5, 6],
+                layout=go.Layout(
+                    xaxis={"range": replay_window(pd.Timestamp(origin))},
+                    shapes=known_disturbance_shapes(pd.Timestamp(origin)),
+                    annotations=replay_metric_annotations(pd.Timestamp(origin)),
+                ),
+            )
+            for origin in origins
+        ],
+    )
+    slider_steps = [
+        {
+            "args": [
+                [pd.Timestamp(origin).date().isoformat()],
+                {
+                    "frame": {"duration": 450, "redraw": False},
+                    "mode": "immediate",
+                    "transition": {"duration": 300, "easing": "cubic-in-out"},
+                },
+            ],
+            "label": (
+                pd.Timestamp(origin).strftime("%b %-d")
+                if (
+                    (pd.Timestamp(origin) - pd.Timestamp(origins[0])).days % 7 == 0
+                    or origin == origins[-1]
+                )
+                else ""
+            ),
+            "method": "animate",
+        }
+        for origin in origins
+    ]
+    figure.update_layout(
+        height=620,
+        margin={"l": 15, "r": 20, "t": 130, "b": 20},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": INK},
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.04, "x": 0},
+        shapes=known_disturbance_shapes(pd.Timestamp(initial_origin)),
+        annotations=replay_metric_annotations(pd.Timestamp(initial_origin)),
+        xaxis={
+            "range": replay_window(pd.Timestamp(initial_origin)),
+            "tickformat": "%b %-d",
+            "showgrid": False,
+            "title": None,
+        },
+        yaxis={
+            "range": y_range,
+            "tickprefix": "$",
+            "tickformat": ",.0f",
+            "gridcolor": "#E8E4DA",
+            "title": None,
+        },
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "left",
+                "x": 0,
+                "y": -0.16,
+                "showactive": False,
+                "buttons": [
+                    {
+                        "label": "▶ Play",
+                        "method": "animate",
+                        "args": [
+                            None,
+                            {
+                                "frame": {"duration": 320, "redraw": False},
+                                "fromcurrent": True,
+                                "transition": {
+                                    "duration": 240,
+                                    "easing": "cubic-in-out",
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "label": "Pause",
+                        "method": "animate",
+                        "args": [
+                            [None],
+                            {
+                                "frame": {"duration": 0, "redraw": False},
+                                "mode": "immediate",
+                                "transition": {"duration": 0},
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+        sliders=[
+            {
+                "active": 0,
+                "currentvalue": {"prefix": "Forecast issued: ", "font": {"size": 14}},
+                "pad": {"t": 48, "l": 145},
+                "steps": slider_steps,
+            }
+        ],
+    )
+    return figure
 
 
 def disturbance_timeline(
