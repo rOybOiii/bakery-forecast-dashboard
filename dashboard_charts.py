@@ -282,10 +282,10 @@ def forecast_replay_chart(
     y_range = [value_low - padding, value_high + padding]
 
     def replay_window(origin: pd.Timestamp) -> list[pd.Timestamp]:
-        """Four weeks: two observed weeks, then the 14-day forecast."""
+        """Three weeks: one observed week, then the 14-day forecast."""
 
         return [
-            pd.Timestamp(origin) - timedelta(days=14),
+            pd.Timestamp(origin) - timedelta(days=7),
             pd.Timestamp(origin) + timedelta(days=14),
         ]
 
@@ -510,17 +510,23 @@ def forecast_replay_chart(
             connectgaps=False,
         )
 
-    def known_event_effect_traces(origin: pd.Timestamp) -> list[go.Scatter]:
-        """Show JEAM's estimated event contribution once it was knowable."""
+    def known_event_counterfactual_trace(origin: pd.Timestamp) -> go.Scatter:
+        """Show the no-event path once JEAM's evidence was knowable."""
 
-        counterfactual_x: list[object] = []
-        counterfactual_y: list[float | None] = []
-        counterfactual_dates: list[str | None] = []
-        event_actual_x: list[object] = []
-        event_actual_y: list[float | None] = []
-        event_details: list[list[object] | None] = []
-        window_start, _ = replay_window(origin)
-        actual_by_date = actual.set_index("target_date")["actual_sales"]
+        window_start, window_end = replay_window(origin)
+        visible_actual = actual.loc[
+            actual["target_date"].between(window_start, window_end)
+        ].copy()
+        counterfactual = visible_actual.set_index("target_date")[
+            "actual_sales"
+        ].copy()
+        hover_details = {
+            day: (
+                f"{pd.Timestamp(day):%A, %b %-d}"
+                f"<br>Estimated without event: ${value:,.0f}"
+            )
+            for day, value in counterfactual.items()
+        }
         if not disturbance_frame.empty:
             events = disturbance_frame.loc[
                 disturbance_frame["disturbance_type"].eq("event")
@@ -533,68 +539,104 @@ def forecast_replay_chart(
                 if end < start:
                     continue
                 event_dates = pd.date_range(start, end, freq="D")
-                observed = actual_by_date.reindex(event_dates).dropna()
+                observed = counterfactual.reindex(event_dates).dropna()
                 if observed.empty:
                     continue
                 median_effect = float(row.effect_median_dollars_per_day)
                 low_effect = float(row.effect_low_dollars_per_day)
                 high_effect = float(row.effect_high_dollars_per_day)
-                counterfactual = observed - median_effect
-                details = [
-                    [
-                        day.strftime("%A, %b %-d"),
-                        median_effect,
-                        low_effect,
-                        high_effect,
-                        row.support_probability,
-                    ]
-                    for day in observed.index
-                ]
-                event_offsets = [
-                    relative_day(day, origin) for day in observed.index
-                ]
-                counterfactual_x.extend([*event_offsets, None])
-                counterfactual_y.extend([*counterfactual.tolist(), None])
-                counterfactual_dates.extend(
-                    [*[day[0] for day in details], None]
-                )
-                event_actual_x.extend([*event_offsets, None])
-                event_actual_y.extend([*observed.tolist(), None])
-                event_details.extend([*details, None])
+                counterfactual.loc[observed.index] = observed - median_effect
+                for day in observed.index:
+                    hover_details[day] = (
+                        f"{pd.Timestamp(day):%A, %b %-d}"
+                        f"<br>Estimated without event: "
+                        f"${counterfactual.loc[day]:,.0f}"
+                        f"<br>Estimated event effect: ${median_effect:+,.0f} per day"
+                        f"<br>Plausible range: ${low_effect:+,.0f} to "
+                        f"${high_effect:+,.0f}"
+                        f"<br>Event support: {row.support_probability:.0%}"
+                    )
 
-        return [
-            go.Scatter(
-                x=counterfactual_x,
-                y=counterfactual_y,
-                mode="lines",
-                line={"color": "#8B6254", "width": 2, "dash": "dash"},
-                name="Estimated without event",
-                connectgaps=False,
-                customdata=counterfactual_dates,
-                hovertemplate=(
-                    "%{customdata}<br>Estimated without event: $%{y:,.0f}"
-                    "<extra></extra>"
-                ),
-            ),
-            go.Scatter(
-                x=event_actual_x,
-                y=event_actual_y,
-                mode="lines",
-                line={"color": "rgba(213,106,74,0)", "width": 0},
-                fill="tonexty",
-                fillcolor="rgba(213,106,74,0.25)",
-                name="Estimated event effect",
-                connectgaps=False,
-                customdata=event_details,
-                hovertemplate=(
-                    "%{customdata[0]}<br>Estimated event effect: "
-                    "$%{customdata[1]:+,.0f} per day"
-                    "<br>Plausible range: $%{customdata[2]:+,.0f} to "
-                    "$%{customdata[3]:+,.0f}"
-                    "<br>Event support: %{customdata[4]:.0%}<extra></extra>"
-                ),
-            ),
+        return go.Scatter(
+            x=[relative_day(day, origin) for day in counterfactual.index],
+            y=counterfactual.tolist(),
+            mode="lines",
+            line={"color": "#8B6254", "width": 2, "dash": "dash"},
+            name="Estimated without event",
+            connectgaps=False,
+            customdata=[hover_details[day] for day in counterfactual.index],
+            hovertemplate="%{customdata}<extra></extra>",
+        )
+
+    def event_effect_bridge_trace(
+        origin: pd.Timestamp,
+        counterfactual_trace: go.Scatter,
+    ) -> go.Scatter:
+        """Shade event amplitude with animated scatter markers."""
+
+        window_start, window_end = replay_window(origin)
+        visible_actual = actual.loc[
+            actual["target_date"].between(window_start, window_end)
         ]
+        actual_values = visible_actual["actual_sales"].astype(float).tolist()
+        counterfactual_values = [float(value) for value in counterfactual_trace.y]
+        offsets = [float(value) for value in counterfactual_trace.x]
+        dense_x: list[float] = []
+        dense_midpoint: list[float] = []
+        dense_size: list[float] = []
+        dense_color: list[str] = []
+        plot_height_pixels = (620 - 8 - 96) * 0.68
+        pixels_per_dollar = plot_height_pixels / (y_range[1] - y_range[0])
+        subdivisions = 8
+        for index in range(max(0, len(offsets) - 1)):
+            for step in range(subdivisions):
+                fraction = step / subdivisions
+                x_value = offsets[index] + (
+                    offsets[index + 1] - offsets[index]
+                ) * fraction
+                observed_value = actual_values[index] + (
+                    actual_values[index + 1] - actual_values[index]
+                ) * fraction
+                counterfactual_value = counterfactual_values[index] + (
+                    counterfactual_values[index + 1]
+                    - counterfactual_values[index]
+                ) * fraction
+                difference = observed_value - counterfactual_value
+                dense_x.append(x_value)
+                dense_midpoint.append(
+                    (observed_value + counterfactual_value) / 2
+                )
+                dense_size.append(max(1.0, abs(difference) * pixels_per_dollar))
+                dense_color.append(
+                    "rgba(213,106,74,0.26)"
+                    if abs(difference) > 1
+                    else "rgba(213,106,74,0.001)"
+                )
+        if offsets:
+            difference = actual_values[-1] - counterfactual_values[-1]
+            dense_x.append(offsets[-1])
+            dense_midpoint.append(
+                (actual_values[-1] + counterfactual_values[-1]) / 2
+            )
+            dense_size.append(max(1.0, abs(difference) * pixels_per_dollar))
+            dense_color.append(
+                "rgba(213,106,74,0.26)"
+                if abs(difference) > 1
+                else "rgba(213,106,74,0.001)"
+            )
+        return go.Scatter(
+            x=dense_x,
+            y=dense_midpoint,
+            mode="markers",
+            marker={
+                "symbol": "line-ns",
+                "size": dense_size,
+                "color": dense_color,
+                "line": {"width": 7, "color": dense_color},
+            },
+            name="Estimated event effect",
+            hoverinfo="skip",
+        )
 
     def traces(origin: pd.Timestamp) -> list[go.Scatter]:
         vintage = frame.loc[frame["forecast_origin"].eq(origin)]
@@ -688,11 +730,13 @@ def forecast_replay_chart(
     def frame_traces(origin: pd.Timestamp) -> list[go.BaseTraceType]:
         """Every changing visual is a trace; the chart frame never relayouts."""
 
+        counterfactual_trace = known_event_counterfactual_trace(origin)
         return [
             replay_metric_trace(origin),
             known_disturbance_trace(origin, "regime"),
             known_disturbance_trace(origin, "event"),
-            *known_event_effect_traces(origin),
+            counterfactual_trace,
+            event_effect_bridge_trace(origin, counterfactual_trace),
             *traces(origin),
         ]
 
@@ -759,11 +803,11 @@ def forecast_replay_chart(
             for x0, x1 in ((0.00, 0.30), (0.35, 0.65), (0.70, 1.00))
         ],
         xaxis={
-            "range": [-15.2, 15.2],
+            "range": [-7.8, 14.8],
             "domain": [0, 1],
             "tickmode": "array",
-            "tickvals": [-14, -7, 0, 7, 14],
-            "ticktext": ["−14 days", "−7 days", "Issue date", "+7 days", "+14 days"],
+            "tickvals": [-7, 0, 7, 14],
+            "ticktext": ["−7 days", "Issue date", "+7 days", "+14 days"],
             "showgrid": False,
             "title": None,
             "fixedrange": True,
@@ -799,7 +843,7 @@ def forecast_replay_chart(
                 "direction": "left",
                 "x": 0,
                 "xanchor": "left",
-                "y": -0.14,
+                "y": -0.09,
                 "yanchor": "top",
                 "showactive": False,
                 "buttons": [

@@ -86,3 +86,24 @@ def test_replay_readouts_follow_the_selected_14_day_vintage():
     assert "$539" in initial_miss
     assert "0 of 14 outcomes reported" in future_miss
     assert "Waiting" in future_miss
+    assert list(figure.layout.xaxis.range) == [-7.8, 14.8]
+    assert list(figure.layout.xaxis.tickvals) == [-7, 0, 7, 14]
+    assert list(figure.layout.xaxis.ticktext) == [
+        "−7 days",
+        "Issue date",
+        "+7 days",
+        "+14 days",
+    ]
+
+    final_counterfactual = figure.frames[-1].data[3]
+    final_event_bridge = figure.frames[-1].data[4]
+    final_actual = figure.frames[-1].data[5]
+    assert final_event_bridge.marker.symbol == "line-ns"
+    assert max(final_event_bridge.marker.size) > 1
+    assert len(final_counterfactual.x) == len(final_actual.x)
+    assert any(
+        counterfactual != observed
+        for counterfactual, observed in zip(
+            final_counterfactual.y, final_actual.y
+        )
+    )
