@@ -78,7 +78,11 @@ def test_replay_readouts_follow_the_selected_14_day_vintage():
     disturbances = bundle.disturbances.loc[
         bundle.disturbances["restaurant"].eq("downtown")
     ]
-    figure = forecast_replay_chart(replay, disturbances)
+    figure = forecast_replay_chart(
+        replay,
+        disturbances,
+        history_rows(bundle, "downtown"),
+    )
 
     initial_miss = figure.data[0].text[1]
     future_miss = figure.frames[-1].data[0].text[1]
@@ -86,24 +90,30 @@ def test_replay_readouts_follow_the_selected_14_day_vintage():
     assert "$539" in initial_miss
     assert "0 of 14 outcomes reported" in future_miss
     assert "Waiting" in future_miss
-    assert list(figure.layout.xaxis.range) == [-7.8, 14.8]
-    assert list(figure.layout.xaxis.tickvals) == [-7, 0, 7, 14]
+    assert list(figure.layout.xaxis.range) == [-0.8, 14.8]
+    assert list(figure.layout.xaxis.tickvals) == [0, 7, 14]
     assert list(figure.layout.xaxis.ticktext) == [
-        "−7 days",
         "Issue date",
         "+7 days",
         "+14 days",
     ]
+    assert min(figure.data[5].x) == 0
+    assert min(figure.data[8].x) == 1
 
-    final_counterfactual = figure.frames[-1].data[3]
-    final_event_bridge = figure.frames[-1].data[4]
-    final_actual = figure.frames[-1].data[5]
-    assert final_event_bridge.marker.symbol == "line-ns"
-    assert max(final_event_bridge.marker.size) > 1
-    assert len(final_counterfactual.x) == len(final_actual.x)
-    assert any(
-        counterfactual != observed
-        for counterfactual, observed in zip(
-            final_counterfactual.y, final_actual.y
+    event_frames = [
+        replay_frame
+        for replay_frame in figure.frames
+        if max(replay_frame.data[4].marker.size) > 1
+    ]
+    assert event_frames
+    for replay_frame in event_frames:
+        counterfactual = replay_frame.data[3]
+        actual = replay_frame.data[5]
+        assert min(counterfactual.x) >= 0
+        assert len(counterfactual.x) == len(actual.x)
+        assert any(
+            expected_without_event != observed
+            for expected_without_event, observed in zip(
+                counterfactual.y, actual.y
+            )
         )
-    )

@@ -239,6 +239,7 @@ def recent_performance_chart(
 def forecast_replay_chart(
     frame: pd.DataFrame,
     disturbances: pd.DataFrame | None = None,
+    actual_history: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Animated, fixed-window replay of saved 14-day forecast vintages."""
 
@@ -247,10 +248,23 @@ def forecast_replay_chart(
     if not origins:
         raise ValueError("Forecast replay requires at least one saved vintage")
 
+    actual_sources = [
+        frame.loc[
+            frame["actual_available"].astype(bool),
+            ["target_date", "actual_sales"],
+        ]
+    ]
+    if actual_history is not None:
+        actual_sources.append(
+            actual_history.loc[
+                actual_history["actual_available"].astype(bool),
+                ["target_date", "actual_sales"],
+            ]
+        )
     actual = (
-        frame.loc[frame["actual_available"].astype(bool)]
+        pd.concat(actual_sources, ignore_index=True)
         .dropna(subset=["actual_sales"])
-        .sort_values(["target_date", "forecast_origin"])
+        .sort_values("target_date")
         .drop_duplicates("target_date", keep="last")
     )
     disturbance_frame = (
@@ -282,10 +296,10 @@ def forecast_replay_chart(
     y_range = [value_low - padding, value_high + padding]
 
     def replay_window(origin: pd.Timestamp) -> list[pd.Timestamp]:
-        """Three weeks: one observed week, then the 14-day forecast."""
+        """The issue day followed by its 14-day forecast horizon."""
 
         return [
-            pd.Timestamp(origin) - timedelta(days=7),
+            pd.Timestamp(origin),
             pd.Timestamp(origin) + timedelta(days=14),
         ]
 
@@ -462,7 +476,8 @@ def forecast_replay_chart(
 
         xs: list[float | None] = []
         ys: list[float | None] = []
-        window_start, _ = replay_window(origin)
+        _, window_end = replay_window(origin)
+        forecast_start = pd.Timestamp(origin) + timedelta(days=1)
         if disturbance_type == "event":
             color = "rgba(213,106,74,0.05)"
             name = "Detected event"
@@ -474,15 +489,8 @@ def forecast_replay_chart(
                 disturbance_frame["disturbance_type"].eq(disturbance_type)
             ]
             for row in rows.itertuples(index=False):
-                evidence_available = (
-                    pd.Timestamp(row.end_upper)
-                    if disturbance_type == "event"
-                    else pd.Timestamp(row.start_upper) + timedelta(days=7)
-                )
-                if evidence_available > origin:
-                    continue
-                start = max(pd.Timestamp(row.start_date), window_start)
-                end = min(pd.Timestamp(row.end_date), origin)
+                start = max(pd.Timestamp(row.start_date), forecast_start)
+                end = min(pd.Timestamp(row.end_date), window_end)
                 if end < start:
                     continue
                 x0 = relative_day(start, origin) - 0.5
@@ -532,10 +540,11 @@ def forecast_replay_chart(
                 disturbance_frame["disturbance_type"].eq("event")
             ]
             for row in events.itertuples(index=False):
-                if pd.Timestamp(row.end_upper) > origin:
-                    continue
-                start = max(pd.Timestamp(row.start_date), window_start)
-                end = min(pd.Timestamp(row.end_date), origin)
+                start = max(
+                    pd.Timestamp(row.start_date),
+                    pd.Timestamp(origin) + timedelta(days=1),
+                )
+                end = min(pd.Timestamp(row.end_date), window_end)
                 if end < start:
                     continue
                 event_dates = pd.date_range(start, end, freq="D")
@@ -803,11 +812,11 @@ def forecast_replay_chart(
             for x0, x1 in ((0.00, 0.30), (0.35, 0.65), (0.70, 1.00))
         ],
         xaxis={
-            "range": [-7.8, 14.8],
+            "range": [-0.8, 14.8],
             "domain": [0, 1],
             "tickmode": "array",
-            "tickvals": [-7, 0, 7, 14],
-            "ticktext": ["−7 days", "Issue date", "+7 days", "+14 days"],
+            "tickvals": [0, 7, 14],
+            "ticktext": ["Issue date", "+7 days", "+14 days"],
             "showgrid": False,
             "title": None,
             "fixedrange": True,

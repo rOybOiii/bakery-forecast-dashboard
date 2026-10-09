@@ -423,6 +423,7 @@ if restaurant != "all":
         forecast_replay_chart(
             replay,
             disturbance_rows(bundle, restaurant),
+            history_rows(bundle, restaurant),
         ),
         key=f"forecast_replay_chart_{restaurant}",
         width="stretch",
@@ -436,8 +437,8 @@ if restaurant != "all":
         f"{replay['forecast_origin'].nunique()} forecast versions span roughly three months. "
         "Press Play or drag the issue-date control below the chart. Daily historical "
         "versions are cutoff-only demonstration backfills; the newest version is the "
-        "archived Forecast 2 output. Event and regime bands appear only after a conservative "
-        "demo detection delay. The dashed event line is estimated sales without the event; "
+        "archived Forecast 2 output. Event and regime bands mark what was later detected "
+        "inside each replayed forecast horizon. The dashed event line is estimated sales without the event; "
         "the filled gap to actual sales is the median event effect, with its plausible range "
         "available on hover. Production replay will replace these approximations with daily "
         "saved Forecast 2, PPRM, JEAM, and ERP vintages."
