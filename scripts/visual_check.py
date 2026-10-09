@@ -120,18 +120,23 @@ def main() -> None:
         if args.exercise_replay:
             replay_chart = page.locator("[data-testid='stPlotlyChart']").first
             replay_chart.wait_for(state="visible")
-            current_value = replay_chart.get_by_text(
-                "Forecast issued:", exact=False
-            ).first
-            current_value.wait_for(state="visible")
-            before_play = current_value.text_content()
-            metric_annotations = replay_chart.locator(".annotation-text")
+            metric_annotations = replay_chart.locator(".textpoint text")
             metrics_before_play = metric_annotations.all_text_contents()
-            replay_chart.get_by_text("Play", exact=False).click(force=True)
+            before_play = metrics_before_play[0]
+            replay_plot = replay_chart.locator(".subplot.xy").first
+            replay_plot_before = replay_plot.bounding_box()
+            x_ticks_before = replay_chart.locator(".xtick text").evaluate_all(
+                "nodes => nodes.map(node => ({position: node.parentNode.getAttribute('transform'), text: node.textContent}))"
+            )
+            replay_chart.locator(".updatemenu-button").nth(0).click(force=True)
             page.wait_for_timeout(args.replay_duration_ms)
-            after_play = current_value.text_content()
             metrics_after_play = metric_annotations.all_text_contents()
-            replay_chart.get_by_text("Pause", exact=False).click(force=True)
+            after_play = metrics_after_play[0]
+            replay_plot_after = replay_plot.bounding_box()
+            x_ticks_after = replay_chart.locator(".xtick text").evaluate_all(
+                "nodes => nodes.map(node => ({position: node.parentNode.getAttribute('transform'), text: node.textContent}))"
+            )
+            replay_chart.locator(".updatemenu-button").nth(1).click(force=True)
             result["replay_before_play"] = before_play
             result["replay_after_play"] = after_play
             result["replay_advanced"] = before_play != after_play
@@ -140,10 +145,30 @@ def main() -> None:
             result["replay_metrics_advanced"] = (
                 metrics_before_play != metrics_after_play
             )
+            result["replay_plot_before"] = replay_plot_before
+            result["replay_plot_after"] = replay_plot_after
+            result["replay_x_tick_positions_stable"] = [
+                tick["position"] for tick in x_ticks_before
+            ] == [tick["position"] for tick in x_ticks_after]
+            result["replay_x_tick_labels_stable"] = [
+                tick["text"] for tick in x_ticks_before
+            ] == [tick["text"] for tick in x_ticks_after]
             if not result["replay_advanced"]:
                 raise SystemExit("Forecast replay did not advance after Play")
             if not result["replay_metrics_advanced"]:
                 raise SystemExit("Forecast replay metrics did not advance after Play")
+            replay_plot_size_before = {
+                key: replay_plot_before[key] for key in ("x", "width", "height")
+            }
+            replay_plot_size_after = {
+                key: replay_plot_after[key] for key in ("x", "width", "height")
+            }
+            if replay_plot_size_before != replay_plot_size_after:
+                raise SystemExit("Forecast replay plot box moved during Play")
+            if not result["replay_x_tick_positions_stable"]:
+                raise SystemExit("Forecast replay x-axis tick positions moved during Play")
+            if not result["replay_x_tick_labels_stable"]:
+                raise SystemExit("Forecast replay x-axis labels changed during Play")
 
         if args.exercise_slider and plot_box:
             navigator_selection = expander.locator(".history-selection")

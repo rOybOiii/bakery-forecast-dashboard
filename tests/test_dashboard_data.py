@@ -80,8 +80,8 @@ def test_replay_readouts_follow_the_selected_14_day_vintage():
     ]
     figure = forecast_replay_chart(replay, disturbances)
 
-    initial_miss = figure.layout.annotations[1].text
-    future_miss = figure.frames[-1].layout.annotations[1].text
+    initial_miss = figure.data[0].text[1]
+    future_miss = figure.frames[-1].data[0].text[1]
     assert "12 of 14 outcomes reported" in initial_miss
     assert "$539" in initial_miss
     assert "0 of 14 outcomes reported" in future_miss

@@ -289,6 +289,19 @@ def forecast_replay_chart(
             pd.Timestamp(origin) + timedelta(days=14),
         ]
 
+    def relative_day(value: object, origin: pd.Timestamp) -> float:
+        """Place a calendar date on the fixed replay stage."""
+
+        return float((pd.Timestamp(value) - pd.Timestamp(origin)).days)
+
+    def replay_ticktext(origin: pd.Timestamp) -> list[str]:
+        """Keep tick positions fixed while their calendar labels advance."""
+
+        return [
+            (pd.Timestamp(origin) + timedelta(days=offset)).strftime("%b %-d")
+            for offset in (-14, -7, 0, 7, 14)
+        ]
+
     def known_disturbance_shapes(origin: pd.Timestamp) -> list[dict[str, object]]:
         """Show only disturbance evidence plausibly available by this cutoff."""
 
@@ -314,8 +327,8 @@ def forecast_replay_chart(
                     "type": "rect",
                     "xref": "x",
                     "yref": "paper",
-                    "x0": start,
-                    "x1": end + timedelta(days=1),
+                    "x0": relative_day(start, origin) - 0.5,
+                    "x1": relative_day(end, origin) + 0.5,
                     "y0": 0,
                     "y1": 1,
                     "fillcolor": color,
@@ -390,11 +403,119 @@ def forecast_replay_chart(
             for x, (title, value, detail) in zip((0.14, 0.50, 0.86), labels)
         ]
 
+    def replay_metric_trace(origin: pd.Timestamp) -> go.Scatter:
+        """Render selected-vintage readouts as data, not a relayout."""
+
+        vintage = frame.loc[frame["forecast_origin"].eq(origin)]
+        reported = vintage.loc[
+            vintage["actual_available"].astype(bool)
+            & vintage["actual_sales"].notna()
+        ].copy()
+        reported_days = len(reported)
+        if reported_days:
+            average_miss = float(
+                (reported["actual_sales"] - reported["median"]).abs().mean()
+            )
+            coverage = float(
+                reported["actual_sales"].between(
+                    reported["q05"], reported["q95"]
+                ).mean()
+            )
+            miss_value = f"${average_miss:,.0f}"
+            coverage_value = f"{coverage:.1%}"
+        else:
+            miss_value = "Waiting"
+            coverage_value = "Waiting"
+        texts = [
+            (
+                "Selected forecast"
+                f"<br><b>{pd.Timestamp(origin):%b %-d, %Y}</b>"
+                "<br><span style='color:#768078'>14-day horizon</span>"
+            ),
+            (
+                f"14-day average miss<br><b>{miss_value}</b>"
+                f"<br><span style='color:#768078'>{reported_days} of 14 outcomes reported</span>"
+            ),
+            (
+                f"Inside 90% range<br><b>{coverage_value}</b>"
+                f"<br><span style='color:#768078'>{reported_days} of 14 outcomes reported</span>"
+            ),
+        ]
+        return go.Scatter(
+            x=[0.15, 0.50, 0.85],
+            y=[0.50, 0.50, 0.50],
+            xaxis="x2",
+            yaxis="y2",
+            mode="text",
+            text=texts,
+            textfont={"color": INK, "size": 13},
+            textposition="middle center",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+
+    def known_disturbance_trace(
+        origin: pd.Timestamp,
+        disturbance_type: str,
+    ) -> go.Scatter:
+        """Render known event or regime windows as an animated data layer."""
+
+        xs: list[float | None] = []
+        ys: list[float | None] = []
+        window_start, _ = replay_window(origin)
+        if disturbance_type == "event":
+            color = "rgba(213,106,74,0.05)"
+            name = "Detected event"
+        else:
+            color = "rgba(217,164,65,0.11)"
+            name = "Detected regime"
+        if not disturbance_frame.empty:
+            rows = disturbance_frame.loc[
+                disturbance_frame["disturbance_type"].eq(disturbance_type)
+            ]
+            for row in rows.itertuples(index=False):
+                evidence_available = (
+                    pd.Timestamp(row.end_upper)
+                    if disturbance_type == "event"
+                    else pd.Timestamp(row.start_upper) + timedelta(days=7)
+                )
+                if evidence_available > origin:
+                    continue
+                start = max(pd.Timestamp(row.start_date), window_start)
+                end = min(pd.Timestamp(row.end_date), origin)
+                if end < start:
+                    continue
+                x0 = relative_day(start, origin) - 0.5
+                x1 = relative_day(end, origin) + 0.5
+                xs.extend([x0, x1, x1, x0, x0, None])
+                ys.extend(
+                    [
+                        y_range[0],
+                        y_range[0],
+                        y_range[1],
+                        y_range[1],
+                        y_range[0],
+                        None,
+                    ]
+                )
+        return go.Scatter(
+            x=xs,
+            y=ys,
+            mode="lines",
+            line={"width": 0, "color": color},
+            fill="toself",
+            fillcolor=color,
+            name=name,
+            hoverinfo="skip",
+            connectgaps=False,
+        )
+
     def known_event_effect_traces(origin: pd.Timestamp) -> list[go.Scatter]:
         """Show JEAM's estimated event contribution once it was knowable."""
 
         counterfactual_x: list[object] = []
         counterfactual_y: list[float | None] = []
+        counterfactual_dates: list[str | None] = []
         event_actual_x: list[object] = []
         event_actual_y: list[float | None] = []
         event_details: list[list[object] | None] = []
@@ -420,12 +541,24 @@ def forecast_replay_chart(
                 high_effect = float(row.effect_high_dollars_per_day)
                 counterfactual = observed - median_effect
                 details = [
-                    [median_effect, low_effect, high_effect, row.support_probability]
-                    for _ in observed
+                    [
+                        day.strftime("%A, %b %-d"),
+                        median_effect,
+                        low_effect,
+                        high_effect,
+                        row.support_probability,
+                    ]
+                    for day in observed.index
                 ]
-                counterfactual_x.extend([*observed.index, None])
+                event_offsets = [
+                    relative_day(day, origin) for day in observed.index
+                ]
+                counterfactual_x.extend([*event_offsets, None])
                 counterfactual_y.extend([*counterfactual.tolist(), None])
-                event_actual_x.extend([*observed.index, None])
+                counterfactual_dates.extend(
+                    [*[day[0] for day in details], None]
+                )
+                event_actual_x.extend([*event_offsets, None])
                 event_actual_y.extend([*observed.tolist(), None])
                 event_details.extend([*details, None])
 
@@ -437,8 +570,9 @@ def forecast_replay_chart(
                 line={"color": "#8B6254", "width": 2, "dash": "dash"},
                 name="Estimated without event",
                 connectgaps=False,
+                customdata=counterfactual_dates,
                 hovertemplate=(
-                    "%{x|%A, %b %d}<br>Estimated without event: $%{y:,.0f}"
+                    "%{customdata}<br>Estimated without event: $%{y:,.0f}"
                     "<extra></extra>"
                 ),
             ),
@@ -453,27 +587,56 @@ def forecast_replay_chart(
                 connectgaps=False,
                 customdata=event_details,
                 hovertemplate=(
-                    "%{x|%A, %b %d}<br>Estimated event effect: "
-                    "$%{customdata[0]:+,.0f} per day"
-                    "<br>Plausible range: $%{customdata[1]:+,.0f} to "
-                    "$%{customdata[2]:+,.0f}"
-                    "<br>Event support: %{customdata[3]:.0%}<extra></extra>"
+                    "%{customdata[0]}<br>Estimated event effect: "
+                    "$%{customdata[1]:+,.0f} per day"
+                    "<br>Plausible range: $%{customdata[2]:+,.0f} to "
+                    "$%{customdata[3]:+,.0f}"
+                    "<br>Event support: %{customdata[4]:.0%}<extra></extra>"
                 ),
             ),
         ]
 
     def traces(origin: pd.Timestamp) -> list[go.Scatter]:
         vintage = frame.loc[frame["forecast_origin"].eq(origin)]
+        window_start, window_end = replay_window(origin)
+        visible_actual = actual.loc[
+            actual["target_date"].between(window_start, window_end)
+        ]
         kind = str(vintage["vintage_kind"].iloc[0])
         source_label = (
             "Archived Forecast 2"
             if kind == "archived_forecast_2"
             else "Cutoff-only demo backfill"
         )
-        customdata = [[source_label]] * len(vintage)
+        forecast_offsets = [
+            relative_day(day, origin) for day in vintage["target_date"]
+        ]
+        forecast_details = [
+            [pd.Timestamp(day).strftime("%A, %b %-d"), source_label]
+            for day in vintage["target_date"]
+        ]
+        actual_offsets = [
+            relative_day(day, origin) for day in visible_actual["target_date"]
+        ]
+        actual_dates = [
+            pd.Timestamp(day).strftime("%A, %b %-d")
+            for day in visible_actual["target_date"]
+        ]
         return [
             go.Scatter(
-                x=vintage["target_date"],
+                x=actual_offsets,
+                y=visible_actual["actual_sales"],
+                mode="lines+markers",
+                line={"color": TERRACOTTA, "width": 2.5},
+                marker={"color": TERRACOTTA, "size": 6},
+                name="Actual sales",
+                customdata=actual_dates,
+                hovertemplate=(
+                    "%{customdata}<br>Actual sales: $%{y:,.0f}<extra></extra>"
+                ),
+            ),
+            go.Scatter(
+                x=forecast_offsets,
                 y=vintage["q05"],
                 mode="lines",
                 line={"width": 0, "color": "rgba(47,107,85,0)"},
@@ -481,34 +644,34 @@ def forecast_replay_chart(
                 showlegend=False,
             ),
             go.Scatter(
-                x=vintage["target_date"],
+                x=forecast_offsets,
                 y=vintage["q95"],
                 mode="lines",
                 line={"width": 0, "color": "rgba(47,107,85,0)"},
                 fill="tonexty",
                 fillcolor="rgba(47,107,85,0.16)",
                 name="90% forecast range",
-                customdata=customdata,
+                customdata=forecast_details,
                 hovertemplate=(
-                    "%{x|%A, %b %d}<br>90% high: $%{y:,.0f}"
-                    "<br>%{customdata[0]}<extra></extra>"
+                    "%{customdata[0]}<br>90% high: $%{y:,.0f}"
+                    "<br>%{customdata[1]}<extra></extra>"
                 ),
             ),
             go.Scatter(
-                x=vintage["target_date"],
+                x=forecast_offsets,
                 y=vintage["median"],
                 mode="lines+markers",
                 line={"color": GREEN, "width": 3},
                 marker={"color": GREEN, "size": 7},
                 name="Forecast",
-                customdata=customdata,
+                customdata=forecast_details,
                 hovertemplate=(
-                    "%{x|%A, %b %d}<br>Forecast: $%{y:,.0f}"
-                    "<br>%{customdata[0]}<extra></extra>"
+                    "%{customdata[0]}<br>Forecast: $%{y:,.0f}"
+                    "<br>%{customdata[1]}<extra></extra>"
                 ),
             ),
             go.Scatter(
-                x=[origin, origin],
+                x=[0, 0],
                 y=y_range,
                 mode="lines",
                 line={"color": MUTED, "width": 1.5, "dash": "dot"},
@@ -521,51 +684,25 @@ def forecast_replay_chart(
         ]
 
     initial_origin = origins[0]
+
+    def frame_traces(origin: pd.Timestamp) -> list[go.BaseTraceType]:
+        """Every changing visual is a trace; the chart frame never relayouts."""
+
+        return [
+            replay_metric_trace(origin),
+            known_disturbance_trace(origin, "regime"),
+            known_disturbance_trace(origin, "event"),
+            *known_event_effect_traces(origin),
+            *traces(origin),
+        ]
+
     figure = go.Figure(
-        data=[
-            go.Scatter(
-                x=actual["target_date"],
-                y=actual["actual_sales"],
-                mode="lines+markers",
-                line={"color": TERRACOTTA, "width": 2.5},
-                marker={"color": TERRACOTTA, "size": 6},
-                name="Actual sales",
-                hovertemplate=(
-                    "%{x|%A, %b %d}<br>Actual sales: $%{y:,.0f}<extra></extra>"
-                ),
-            ),
-            *known_event_effect_traces(pd.Timestamp(initial_origin)),
-            *traces(initial_origin),
-            go.Scatter(
-                x=[None],
-                y=[None],
-                mode="lines",
-                line={"color": "rgba(213,106,74,0.35)", "width": 9},
-                name="Detected event",
-                hoverinfo="skip",
-            ),
-            go.Scatter(
-                x=[None],
-                y=[None],
-                mode="lines",
-                line={"color": "rgba(217,164,65,0.35)", "width": 9},
-                name="Detected regime",
-                hoverinfo="skip",
-            ),
-        ],
+        data=frame_traces(pd.Timestamp(initial_origin)),
         frames=[
             go.Frame(
                 name=pd.Timestamp(origin).date().isoformat(),
-                data=[
-                    *known_event_effect_traces(pd.Timestamp(origin)),
-                    *traces(origin),
-                ],
-                traces=[1, 2, 3, 4, 5, 6],
-                layout=go.Layout(
-                    xaxis={"range": replay_window(pd.Timestamp(origin))},
-                    shapes=known_disturbance_shapes(pd.Timestamp(origin)),
-                    annotations=replay_metric_annotations(pd.Timestamp(origin)),
-                ),
+                data=frame_traces(pd.Timestamp(origin)),
+                traces=list(range(10)),
             )
             for origin in origins
         ],
@@ -575,9 +712,9 @@ def forecast_replay_chart(
             "args": [
                 [pd.Timestamp(origin).date().isoformat()],
                 {
-                    "frame": {"duration": 450, "redraw": False},
+                    "frame": {"duration": 420, "redraw": False},
                     "mode": "immediate",
-                    "transition": {"duration": 300, "easing": "cubic-in-out"},
+                    "transition": {"duration": 340, "easing": "cubic-in-out"},
                 },
             ],
             "label": (
@@ -594,33 +731,76 @@ def forecast_replay_chart(
     ]
     figure.update_layout(
         height=620,
-        margin={"l": 15, "r": 20, "t": 130, "b": 20},
+        margin={
+            "l": 8,
+            "r": 8,
+            "t": 8,
+            "b": 96,
+            "autoexpand": False,
+        },
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font={"color": INK},
         hovermode="x unified",
-        legend={"orientation": "h", "y": 1.04, "x": 0},
-        shapes=known_disturbance_shapes(pd.Timestamp(initial_origin)),
-        annotations=replay_metric_annotations(pd.Timestamp(initial_origin)),
+        legend={"orientation": "h", "y": 0.77, "x": 0},
+        shapes=[
+            {
+                "type": "rect",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": x0,
+                "x1": x1,
+                "y0": 0.82,
+                "y1": 0.99,
+                "fillcolor": "rgba(255,253,248,0.98)",
+                "line": {"color": "#DED8CB", "width": 1},
+                "layer": "below",
+            }
+            for x0, x1 in ((0.00, 0.30), (0.35, 0.65), (0.70, 1.00))
+        ],
         xaxis={
-            "range": replay_window(pd.Timestamp(initial_origin)),
-            "tickformat": "%b %-d",
+            "range": [-15.2, 15.2],
+            "domain": [0, 1],
+            "tickmode": "array",
+            "tickvals": [-14, -7, 0, 7, 14],
+            "ticktext": ["−14 days", "−7 days", "Issue date", "+7 days", "+14 days"],
             "showgrid": False,
             "title": None,
+            "fixedrange": True,
+            "automargin": False,
         },
         yaxis={
             "range": y_range,
+            "domain": [0.00, 0.68],
             "tickprefix": "$",
             "tickformat": ",.0f",
             "gridcolor": "#E8E4DA",
             "title": None,
+            "fixedrange": True,
+            "automargin": False,
+            "ticklabelposition": "inside",
+            "ticks": "inside",
+        },
+        xaxis2={
+            "domain": [0, 1],
+            "range": [0, 1],
+            "visible": False,
+            "fixedrange": True,
+        },
+        yaxis2={
+            "domain": [0.82, 0.99],
+            "range": [0, 1],
+            "visible": False,
+            "fixedrange": True,
         },
         updatemenus=[
             {
                 "type": "buttons",
                 "direction": "left",
                 "x": 0,
-                "y": -0.16,
+                "xanchor": "left",
+                "y": -0.14,
+                "yanchor": "top",
                 "showactive": False,
                 "buttons": [
                     {
@@ -629,10 +809,10 @@ def forecast_replay_chart(
                         "args": [
                             None,
                             {
-                                "frame": {"duration": 320, "redraw": False},
+                                "frame": {"duration": 380, "redraw": False},
                                 "fromcurrent": True,
                                 "transition": {
-                                    "duration": 240,
+                                    "duration": 320,
                                     "easing": "cubic-in-out",
                                 },
                             },
@@ -656,8 +836,11 @@ def forecast_replay_chart(
         sliders=[
             {
                 "active": 0,
-                "currentvalue": {"prefix": "Forecast issued: ", "font": {"size": 14}},
-                "pad": {"t": 48, "l": 145},
+                "x": 0.14,
+                "len": 0.86,
+                "xanchor": "left",
+                "currentvalue": {"visible": False},
+                "pad": {"t": 48, "l": 0},
                 "steps": slider_steps,
             }
         ],
