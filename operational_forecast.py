@@ -149,6 +149,7 @@ def _allocation_mode_changed() -> None:
 def _switch_to_manual_schedule(selected_index: int) -> None:
     st.session_state["marketing_allocation_mode"] = "Manual schedule"
     st.session_state["marketing_editing_block_index"] = int(selected_index)
+    st.session_state["marketing_selected_block_index"] = int(selected_index)
     for key in list(st.session_state):
         if key.startswith("marketing_block_") or key.startswith(
             "marketing_allow_higher_"
@@ -158,6 +159,16 @@ def _switch_to_manual_schedule(selected_index: int) -> None:
 
 def _edit_selected_spend_block(selected_index: int) -> None:
     st.session_state["marketing_editing_block_index"] = int(selected_index)
+    st.session_state["marketing_selected_block_index"] = int(selected_index)
+
+
+def _selected_spend_block_changed() -> None:
+    """Keep the open manual editor attached to the visibly selected block."""
+
+    if "marketing_editing_block_index" in st.session_state:
+        st.session_state["marketing_editing_block_index"] = int(
+            st.session_state["marketing_selected_block_index"]
+        )
 
 
 def _close_spend_block_editor() -> None:
@@ -727,7 +738,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         key="marketing_selected_block_index",
         label_visibility="collapsed",
         width="stretch",
-        disabled=editing_index is not None,
+        on_change=_selected_spend_block_changed,
     )
     selected_index = int(selected_block)
     selected = blocks[active_block_indices[selected_index]]
@@ -739,13 +750,19 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     pause_defaults = {}
     if pause_key not in st.session_state:
         pause_defaults["value"] = current_pause_days
-    st.number_input(
-        "Pause after selected block",
+    pause_label_column, pause_input_column = st.columns(
+        [1, 0.32], vertical_alignment="center"
+    )
+    pause_label_column.markdown("**No-spend days after this block**")
+    pause_input_column.number_input(
+        "No-spend days after this block",
         min_value=0,
         max_value=selected_pause_limit,
         step=1,
         key=pause_key,
-        help="Adds whole-plan no-spend days and shifts every later block without overlap.",
+        label_visibility="collapsed",
+        width=104,
+        help="Shifts every later block without overlap.",
         **pause_defaults,
     )
 
