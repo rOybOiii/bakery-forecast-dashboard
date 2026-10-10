@@ -413,10 +413,13 @@ def _saturation_track(
     duration_days: int,
     maximum: int,
     widget_key: str,
+    *,
+    show_thumb_value: bool = True,
 ) -> None:
     yellow, red = saturation_thresholds(channel, duration_days)
     yellow_pct = min(100.0, yellow / maximum * 100.0)
     red_pct = min(100.0, red / maximum * 100.0)
+    thumb_value_style = "" if show_thumb_value else "display: none !important;"
     st.html(
         f"""
         <style>
@@ -432,9 +435,31 @@ def _saturation_track(
             border: 2px solid #f7f4ec !important;
             box-shadow: 0 0 0 1px #2f6b55 !important;
           }}
+          .st-key-{widget_key} [data-testid="stSliderThumbValue"] {{
+            {thumb_value_style}
+          }}
         </style>
         <div class="saturation-labels slider-saturation-labels">
           <span>efficient</span><span>diminishing</span><span>saturated</span>
+        </div>
+        """
+    )
+
+
+def _extended_slider_amount(value: float, maximum: int) -> None:
+    marker_pct = min(100.0, max(0.0, float(value) / maximum * 100.0))
+    if marker_pct <= 8:
+        transform = "translateX(0)"
+    elif marker_pct >= 92:
+        transform = "translateX(-100%)"
+    else:
+        transform = "translateX(-50%)"
+    st.html(
+        f"""
+        <div class="extended-slider-amount">
+          <span style="left:{marker_pct:.1f}%;transform:{transform};">
+            {_money(value)}
+          </span>
         </div>
         """
     )
@@ -721,7 +746,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             extended_key = f"marketing_block_{selected_index}_{key}_extended"
             label = f"{CHANNEL_SPECS[key].label} per day"
             label_column, range_column, value_column = st.columns(
-                [0.9, 2.25, 1.15], vertical_alignment="center"
+                [0.9, 2.55, 0.85], vertical_alignment="center"
             )
             label_class = "channel-spend-label" if eligible[key] else "channel-spend-label disabled"
             label_column.markdown(
@@ -744,13 +769,13 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                         int(round(extended_amount / 5.0) * 5), normal_limits[key]
                     )
                 currency_column, amount_column = value_column.columns(
-                    [0.18, 0.82], gap="small", vertical_alignment="center"
+                    [0.2, 0.8], gap="small", vertical_alignment="center"
                 )
                 currency_column.markdown(
                     '<div class="channel-currency-symbol">$</div>',
                     unsafe_allow_html=True,
                 )
-                amount_column.number_input(
+                direct_value = amount_column.number_input(
                     label,
                     min_value=0.0,
                     step=5.0,
@@ -763,6 +788,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     **extended_defaults,
                 )
                 with range_column:
+                    _extended_slider_amount(float(direct_value), normal_limits[key])
                     st.slider(
                         f"{label} decision range",
                         min_value=0,
@@ -781,6 +807,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                         1,
                         normal_limits[key],
                         extended_slider_key,
+                        show_thumb_value=False,
                     )
             else:
                 slider_defaults = {}
@@ -1137,7 +1164,15 @@ def render_downtown_dashboard(bundle) -> None:
         }
         .channel-currency-symbol {
             color: var(--ink); font-size: 1rem; font-weight: 700;
-            line-height: 2.5rem; text-align: right;
+            display: flex; align-items: center; justify-content: flex-end;
+            height: 2.5rem; line-height: 1; text-align: right;
+        }
+        .extended-slider-amount {
+            height: .95rem; position: relative; color: #2f6b55;
+            font-size: .72rem; font-weight: 650; line-height: .9rem;
+        }
+        .extended-slider-amount span {
+            position: absolute; top: 0; white-space: nowrap;
         }
         .manual-plan-total {
             background: #e8ebe5; border: 1px solid #d8ddd6; border-radius: 12px;
