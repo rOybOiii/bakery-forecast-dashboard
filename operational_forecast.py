@@ -144,9 +144,7 @@ def _allocation_mode_changed() -> None:
 
 def _switch_to_manual_schedule() -> None:
     st.session_state["marketing_allocation_mode"] = "Manual schedule"
-    st.session_state["marketing_editing_block_index"] = int(
-        st.session_state.get("marketing_selected_block_index", 0)
-    )
+    st.session_state.pop("marketing_editing_block_index", None)
     for key in list(st.session_state):
         if key.startswith("marketing_block_") or key.startswith(
             "marketing_allow_higher_"
@@ -154,10 +152,8 @@ def _switch_to_manual_schedule() -> None:
             st.session_state.pop(key, None)
 
 
-def _edit_selected_spend_block() -> None:
-    st.session_state["marketing_editing_block_index"] = int(
-        st.session_state.get("marketing_selected_block_index", 0)
-    )
+def _edit_selected_spend_block(selected_index: int) -> None:
+    st.session_state["marketing_editing_block_index"] = int(selected_index)
 
 
 def _close_spend_block_editor() -> None:
@@ -421,7 +417,7 @@ def _saturation_track(
             opacity: 1 !important;
           }}
         </style>
-        <div class="saturation-labels">
+        <div class="saturation-labels slider-saturation-labels">
           <span>efficient</span><span>diminishing</span><span>saturated</span>
         </div>
         """
@@ -448,7 +444,7 @@ def _saturation_gauge(channel: str, value: float, maximum: int) -> None:
               border:2px solid #f7f4ec;box-shadow:0 0 0 1px #2f6b55;
               transform:translate(-50%,-50%);"></div>
           </div>
-          <div class="saturation-labels">
+          <div class="saturation-labels gauge-saturation-labels">
             <span>efficient</span><span>diminishing</span><span>saturated</span>
           </div>
         </div>
@@ -566,6 +562,14 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             value=plan.channels[key].eligible,
             key=f"marketing_eligible_{key}",
         )
+    if mode == "optimized":
+        st.caption(
+            "Changing channel eligibility re-optimizes every spend block while preserving the total budget."
+        )
+    else:
+        st.caption(
+            r"Manual blocks are not rebalanced automatically. Disabling a channel sets its spend to \$0 across the schedule. Switching back to Optimize schedule replaces manual block edits."
+        )
 
     if mode == "optimized":
         if total_budget > 0 and not any(eligible.values()):
@@ -653,7 +657,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         " · ".join(
             f"{CHANNEL_SPECS[key].label} {_money(block.daily_spend[key])}"
             for key in CHANNEL_ORDER
-        )
+        ).replace("$", r"\$")
         for block in blocks
     ]
     editing_index = (
@@ -664,7 +668,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     if editing_index is not None and not 0 <= int(editing_index) < len(blocks):
         st.session_state.pop("marketing_editing_block_index", None)
         editing_index = None
-    st.markdown("**Blocked spending schedule**")
+    st.markdown("**Spend schedule**")
     selected_block = st.radio(
         "Spending schedule",
         options=list(range(len(blocks))),
@@ -683,7 +687,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             f"Selected block: {selected.duration_days} days. The optimizer staggers channel changes while preserving the total budget."
         )
         st.button(
-            "Edit blocked spending schedule",
+            "Switch to manual editing",
             use_container_width=True,
             on_click=_switch_to_manual_schedule,
         )
@@ -694,6 +698,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             "Edit selected block",
             use_container_width=True,
             on_click=_edit_selected_spend_block,
+            args=(selected_index,),
         )
     else:
         selected_index = int(editing_index)
@@ -727,29 +732,39 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             slider_key = f"marketing_block_{selected_index}_{key}"
             extended_key = f"marketing_block_{selected_index}_{key}_extended"
             label = f"{CHANNEL_SPECS[key].label} per day"
+            label_column, range_column, value_column = st.columns(
+                [0.9, 2.25, 1.15], vertical_alignment="center"
+            )
+            label_class = "channel-spend-label" if eligible[key] else "channel-spend-label disabled"
+            label_column.markdown(
+                f'<div class="{label_class}">{CHANNEL_SPECS[key].label}</div>',
+                unsafe_allow_html=True,
+            )
             if allow_higher:
                 extended_defaults = {}
                 if extended_key not in st.session_state:
                     extended_defaults["value"] = float(
                         st.session_state.get(slider_key, base_value)
                     )
-                direct_value = st.number_input(
+                direct_value = value_column.number_input(
                     label,
                     min_value=0.0,
                     step=5.0,
                     format="%.0f",
                     disabled=not eligible[key],
                     key=extended_key,
+                    label_visibility="collapsed",
                     **extended_defaults,
                 )
-                _saturation_gauge(key, float(direct_value), normal_limits[key])
+                with range_column:
+                    _saturation_gauge(key, float(direct_value), normal_limits[key])
             else:
                 slider_defaults = {}
                 if slider_key not in st.session_state:
                     slider_defaults["value"] = min(
                         int(round(base_value / 5.0) * 5), normal_limits[key]
                     )
-                st.slider(
+                slider_value = range_column.slider(
                     label,
                     min_value=0,
                     max_value=normal_limits[key],
@@ -757,13 +772,19 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     format="$%d",
                     disabled=not eligible[key],
                     key=slider_key,
+                    label_visibility="collapsed",
                     **slider_defaults,
                 )
-                _saturation_track(
-                    key,
-                    1,
-                    normal_limits[key],
-                    slider_key,
+                with range_column:
+                    _saturation_track(
+                        key,
+                        1,
+                        normal_limits[key],
+                        slider_key,
+                    )
+                value_column.markdown(
+                    f'<div class="channel-spend-value">{_money(float(slider_value))}<span>/day</span></div>',
+                    unsafe_allow_html=True,
                 )
         if allow_higher:
             st.caption(
@@ -1060,7 +1081,23 @@ def render_downtown_dashboard(bundle) -> None:
         .published-mode-label { background: #dfe9e1; color: #2f6b55; }
         .saturation-labels {
             display: flex; justify-content: space-between; color: #77827b;
-            font-size: .65rem; margin: -1rem 0 .35rem;
+            font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
+            font-size: .6rem; line-height: 1; white-space: nowrap;
+        }
+        .slider-saturation-labels { margin: -.8rem 0 .2rem; }
+        .gauge-saturation-labels { margin: .3rem 0 0; }
+        .channel-spend-label {
+            color: var(--ink); font-size: .9rem; font-weight: 650;
+            line-height: 1.15; padding-bottom: .35rem;
+        }
+        .channel-spend-label.disabled { color: #98a09b; }
+        .channel-spend-value {
+            color: var(--ink); font-size: .98rem; font-weight: 700;
+            text-align: right; white-space: nowrap; padding-bottom: .35rem;
+        }
+        .channel-spend-value span {
+            color: var(--muted); font-size: .67rem; font-weight: 500;
+            margin-left: .12rem;
         }
         section[role="dialog"]:has(.st-key-marketing_start_date) {
             width: min(520px, 94vw) !important;
