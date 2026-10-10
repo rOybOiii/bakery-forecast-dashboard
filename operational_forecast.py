@@ -107,6 +107,24 @@ def _apply_pending_widget_clear() -> None:
         st.session_state.pop(f"marketing_manual_{channel}", None)
 
 
+def _allocation_mode_changed() -> None:
+    """Carry the current plan smoothly between optimized and manual editing."""
+
+    mode = st.session_state.get("marketing_allocation_mode")
+    if mode == "Manual override":
+        # Seed a newly opened manual mix from the latest optimized working plan.
+        for channel in CHANNEL_ORDER:
+            st.session_state.pop(f"marketing_manual_{channel}", None)
+        return
+    if mode == "Optimize mix":
+        # The optimizer starts from the total the manager just assembled.
+        manual_total = sum(
+            float(st.session_state.get(f"marketing_manual_{channel}", 0.0))
+            for channel in CHANNEL_ORDER
+        )
+        st.session_state["marketing_total_budget"] = int(round(manual_total / 25.0) * 25)
+
+
 def _begin_working_draft(state: MarketingPlanState, baseline: pd.DataFrame) -> None:
     if "marketing_working_plan" not in st.session_state:
         plan = initialize_draft(
@@ -408,15 +426,36 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     elif period == "14 days":
         end = start + timedelta(days=13)
     duration = (end - start).days + 1
-    total_budget = st.slider(
-        "Total planned spend",
-        min_value=0,
-        max_value=15_000,
-        value=int(round(plan.total_budget / 100.0) * 100),
-        step=100,
-        format="$%d",
-        key="marketing_total_budget",
+    default_mode_label = (
+        "Optimize mix" if plan.allocation_mode == "optimized" else "Manual override"
     )
+    active_mode_label = st.session_state.get(
+        "marketing_allocation_mode", default_mode_label
+    )
+    active_mode = "optimized" if active_mode_label == "Optimize mix" else "manual"
+    budget_slot = st.empty()
+    if active_mode == "optimized":
+        budget_value = {}
+        if "marketing_total_budget" not in st.session_state:
+            budget_value["value"] = int(round(plan.total_budget / 25.0) * 25)
+        total_budget = budget_slot.slider(
+            "Total planned spend",
+            min_value=0,
+            max_value=15_000,
+            step=25,
+            format="$%d",
+            key="marketing_total_budget",
+            **budget_value,
+        )
+    else:
+        total_budget = sum(
+            float(
+                st.session_state.get(
+                    f"marketing_manual_{key}", plan.channels[key].amount
+                )
+            )
+            for key in CHANNEL_ORDER
+        )
     st.caption(
         f"{start:%b %-d}–{end:%b %-d} · spending changes forecast values, not the 14-day horizon"
     )
@@ -429,18 +468,19 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             value=plan.channels[key].eligible,
             key=f"marketing_eligible_{key}",
         )
-    if total_budget > 0 and not any(eligible.values()):
-        st.error("Turn on at least one channel before allocating a positive budget.")
-        return None
     mode_label = st.segmented_control(
         "Allocation approach",
         ["Optimize mix", "Manual override"],
-        default="Optimize mix" if plan.allocation_mode == "optimized" else "Manual override",
+        default=default_mode_label,
         key="marketing_allocation_mode",
+        on_change=_allocation_mode_changed,
         width="stretch",
     ) or "Optimize mix"
     mode = "optimized" if mode_label == "Optimize mix" else "manual"
     if mode == "optimized":
+        if total_budget > 0 and not any(eligible.values()):
+            st.error("Turn on at least one channel before allocating a positive budget.")
+            return None
         allocations = None
         preview = make_plan(
             restaurant=RESTAURANT,
@@ -456,21 +496,14 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         )
         values = {key: preview.channels[key].amount for key in CHANNEL_ORDER}
     else:
-        values = {}
-        remaining = float(total_budget)
-        eligible_keys = [key for key in CHANNEL_ORDER if eligible[key]]
-        for index, key in enumerate(CHANNEL_ORDER):
-            default = plan.channels[key].amount if eligible[key] else 0.0
-            if eligible[key] and index == max(
-                (CHANNEL_ORDER.index(value) for value in eligible_keys), default=-1
-            ):
-                default = max(0.0, remaining)
-            values[key] = float(min(default, total_budget)) if eligible[key] else 0.0
-            remaining -= values[key]
+        values = {
+            key: float(plan.channels[key].amount) if eligible[key] else 0.0
+            for key in CHANNEL_ORDER
+        }
     st.markdown("**Proposed channel mix**")
     for key in CHANNEL_ORDER:
         label = CHANNEL_SPECS[key].label
-        maximum = max(total_budget, 100)
+        maximum = max(total_budget, 100) if mode == "optimized" else 15_000
         if mode == "optimized":
             slider_key = f"marketing_optimized_{key}"
             amount = st.slider(
@@ -485,33 +518,30 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             )
         else:
             slider_key = f"marketing_manual_{key}"
+            slider_value = {}
             if slider_key in st.session_state:
                 st.session_state[slider_key] = min(
                     int(st.session_state[slider_key]), maximum
                 )
                 if not eligible[key]:
                     st.session_state[slider_key] = 0
+            else:
+                slider_value["value"] = int(round(values[key]))
             amount = st.slider(
                 label if eligible[key] else f"{label} · off",
                 min_value=0,
                 max_value=maximum,
-                value=int(round(values[key])),
                 step=25,
                 format="$%d",
-                disabled=not eligible[key] or total_budget == 0,
+                disabled=not eligible[key],
                 key=slider_key,
+                **slider_value,
             )
             values[key] = float(amount) if eligible[key] else 0.0
         _saturation_track(key, duration, maximum, slider_key)
     if mode == "manual":
-        allocated = sum(values.values())
-        difference = total_budget - allocated
-        if abs(difference) > 0.02:
-            direction = "left to allocate" if difference > 0 else "over budget"
-            st.warning(
-                f"{_money(abs(difference))} {direction}. Adjust the channel sliders so the mix totals {_money(total_budget)}."
-            )
-            return None
+        total_budget = sum(values.values())
+        budget_slot.metric("Total planned spend", _money(total_budget))
         allocations = values
     return make_plan(
         restaurant=RESTAURANT,
