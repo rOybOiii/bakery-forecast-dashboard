@@ -105,6 +105,7 @@ def _apply_pending_widget_clear() -> None:
         "marketing_cadence_days",
         "marketing_selected_block",
         "marketing_selected_block_index",
+        "marketing_editing_block_index",
     )
     for key in widget_keys:
         st.session_state.pop(key, None)
@@ -129,8 +130,10 @@ def _allocation_mode_changed() -> None:
                 "marketing_allow_higher_"
             ):
                 st.session_state.pop(key, None)
+        st.session_state.pop("marketing_editing_block_index", None)
         return
     if mode == "Optimize schedule":
+        st.session_state.pop("marketing_editing_block_index", None)
         # The optimizer starts from the total of the latest manual working plan.
         working = st.session_state.get("marketing_working_plan")
         manual_total = float(working.total_budget) if working is not None else 0.0
@@ -141,11 +144,24 @@ def _allocation_mode_changed() -> None:
 
 def _switch_to_manual_schedule() -> None:
     st.session_state["marketing_allocation_mode"] = "Manual schedule"
+    st.session_state["marketing_editing_block_index"] = int(
+        st.session_state.get("marketing_selected_block_index", 0)
+    )
     for key in list(st.session_state):
         if key.startswith("marketing_block_") or key.startswith(
             "marketing_allow_higher_"
         ):
             st.session_state.pop(key, None)
+
+
+def _edit_selected_spend_block() -> None:
+    st.session_state["marketing_editing_block_index"] = int(
+        st.session_state.get("marketing_selected_block_index", 0)
+    )
+
+
+def _close_spend_block_editor() -> None:
+    st.session_state.pop("marketing_editing_block_index", None)
 
 
 def _begin_working_draft(state: MarketingPlanState, baseline: pd.DataFrame) -> None:
@@ -412,6 +428,34 @@ def _saturation_track(
     )
 
 
+def _saturation_gauge(channel: str, value: float, maximum: int) -> None:
+    """Show direct-entry spend on the same decision range as the sliders."""
+
+    yellow, red = saturation_thresholds(channel, 1)
+    yellow_pct = min(100.0, yellow / maximum * 100.0)
+    red_pct = min(100.0, red / maximum * 100.0)
+    marker_pct = min(99.2, max(0.8, float(value) / maximum * 100.0))
+    st.html(
+        f"""
+        <div style="padding: 0.15rem 0 0.45rem;">
+          <div style="position:relative;height:8px;border-radius:999px;
+            background:linear-gradient(90deg,
+            #8eb59e 0%, #8eb59e {yellow_pct:.1f}%,
+            #e2bc62 {yellow_pct:.1f}%, #e2bc62 {red_pct:.1f}%,
+            #d86d53 {red_pct:.1f}%, #d86d53 100%);">
+            <div style="position:absolute;left:{marker_pct:.1f}%;top:50%;
+              width:14px;height:14px;border-radius:50%;background:#2f6b55;
+              border:2px solid #f7f4ec;box-shadow:0 0 0 1px #2f6b55;
+              transform:translate(-50%,-50%);"></div>
+          </div>
+          <div class="saturation-labels">
+            <span>efficient</span><span>diminishing</span><span>saturated</span>
+          </div>
+        </div>
+        """
+    )
+
+
 def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     period_default = (
         "7 days" if plan.duration_days == 7 else "14 days" if plan.duration_days == 14 else "Custom"
@@ -455,14 +499,17 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     default_mode_label = (
         "Optimize schedule" if plan.allocation_mode == "optimized" else "Manual schedule"
     )
+    mode_defaults = {}
+    if "marketing_allocation_mode" not in st.session_state:
+        mode_defaults["default"] = default_mode_label
     mode_label = st.segmented_control(
         "Plan construction",
         ["Optimize schedule", "Manual schedule"],
-        default=default_mode_label,
         key="marketing_allocation_mode",
         on_change=_allocation_mode_changed,
         width="stretch",
-    ) or default_mode_label
+        **mode_defaults,
+    ) or st.session_state.get("marketing_allocation_mode", default_mode_label)
     mode = "optimized" if mode_label == "Optimize schedule" else "manual"
 
     goal_labels = {
@@ -602,19 +649,22 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             f"{_money(daily_total)}/day"
         )
 
-    if mode == "optimized":
-        block_captions = [
-            " · ".join(
-                f"{CHANNEL_SPECS[key].label} {_money(block.daily_spend[key])}"
-                for key in CHANNEL_ORDER
-            )
-            for block in blocks
-        ]
-    else:
-        block_captions = ["Select this block to edit its daily channel mix"] * len(
-            blocks
+    block_captions = [
+        " · ".join(
+            f"{CHANNEL_SPECS[key].label} {_money(block.daily_spend[key])}"
+            for key in CHANNEL_ORDER
         )
-    st.markdown("**Spending schedule**")
+        for block in blocks
+    ]
+    editing_index = (
+        st.session_state.get("marketing_editing_block_index")
+        if mode == "manual"
+        else None
+    )
+    if editing_index is not None and not 0 <= int(editing_index) < len(blocks):
+        st.session_state.pop("marketing_editing_block_index", None)
+        editing_index = None
+    st.markdown("**Blocked spending schedule**")
     selected_block = st.radio(
         "Spending schedule",
         options=list(range(len(blocks))),
@@ -623,6 +673,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         key="marketing_selected_block_index",
         label_visibility="collapsed",
         width="stretch",
+        disabled=editing_index is not None,
     )
     selected_index = int(selected_block)
 
@@ -632,82 +683,97 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             f"Selected block: {selected.duration_days} days. The optimizer staggers channel changes while preserving the total budget."
         )
         st.button(
-            "Edit and lock selected block",
+            "Edit blocked spending schedule",
             use_container_width=True,
             on_click=_switch_to_manual_schedule,
         )
         return candidate
 
-    selected = blocks[selected_index]
-    st.markdown(
-        f"**Edit {selected.start:%b %-d}–{selected.end:%b %-d}** · daily spend"
-    )
-    allow_key = f"marketing_allow_higher_{selected_index}"
-    normal_limits = {
-        key: int(
-            round(CHANNEL_SPECS[key].daily_saturation * 1.18 * 1.20 / 5.0)
-            * 5
+    if editing_index is None:
+        st.button(
+            "Edit selected block",
+            use_container_width=True,
+            on_click=_edit_selected_spend_block,
         )
-        for key in CHANNEL_ORDER
-    }
-    allow_defaults = {}
-    if allow_key not in st.session_state:
-        allow_defaults["value"] = any(
-            selected.daily_spend[key] > normal_limits[key]
+    else:
+        selected_index = int(editing_index)
+        selected = blocks[selected_index]
+        st.markdown(
+            f"**Edit {selected.start:%b %-d}–{selected.end:%b %-d}** · daily spend"
+        )
+        allow_key = f"marketing_allow_higher_{selected_index}"
+        normal_limits = {
+            key: int(
+                round(CHANNEL_SPECS[key].daily_saturation * 1.18 * 1.20 / 5.0)
+                * 5
+            )
             for key in CHANNEL_ORDER
+        }
+        allow_defaults = {}
+        if allow_key not in st.session_state:
+            allow_defaults["value"] = any(
+                selected.daily_spend[key] > normal_limits[key]
+                for key in CHANNEL_ORDER
+            )
+        allow_higher = st.toggle(
+            "Allow higher spending",
+            key=allow_key,
+            help="Keeps the saturation range visible while allowing direct dollar entry beyond it.",
+            **allow_defaults,
         )
-    allow_higher = st.toggle(
-        "Allow higher spending",
-        key=allow_key,
-        help="Replaces the normal decision-range sliders with direct dollar entry for this block.",
-        **allow_defaults,
-    )
 
-    for key in CHANNEL_ORDER:
-        base_value = float(selected.daily_spend[key]) if eligible[key] else 0.0
-        slider_key = f"marketing_block_{selected_index}_{key}"
-        extended_key = f"marketing_block_{selected_index}_{key}_extended"
-        label = f"{CHANNEL_SPECS[key].label} per day"
+        for key in CHANNEL_ORDER:
+            base_value = float(selected.daily_spend[key]) if eligible[key] else 0.0
+            slider_key = f"marketing_block_{selected_index}_{key}"
+            extended_key = f"marketing_block_{selected_index}_{key}_extended"
+            label = f"{CHANNEL_SPECS[key].label} per day"
+            if allow_higher:
+                extended_defaults = {}
+                if extended_key not in st.session_state:
+                    extended_defaults["value"] = float(
+                        st.session_state.get(slider_key, base_value)
+                    )
+                direct_value = st.number_input(
+                    label,
+                    min_value=0.0,
+                    step=5.0,
+                    format="%.0f",
+                    disabled=not eligible[key],
+                    key=extended_key,
+                    **extended_defaults,
+                )
+                _saturation_gauge(key, float(direct_value), normal_limits[key])
+            else:
+                slider_defaults = {}
+                if slider_key not in st.session_state:
+                    slider_defaults["value"] = min(
+                        int(round(base_value / 5.0) * 5), normal_limits[key]
+                    )
+                st.slider(
+                    label,
+                    min_value=0,
+                    max_value=normal_limits[key],
+                    step=5,
+                    format="$%d",
+                    disabled=not eligible[key],
+                    key=slider_key,
+                    **slider_defaults,
+                )
+                _saturation_track(
+                    key,
+                    1,
+                    normal_limits[key],
+                    slider_key,
+                )
         if allow_higher:
-            extended_defaults = {}
-            if extended_key not in st.session_state:
-                extended_defaults["value"] = float(
-                    st.session_state.get(slider_key, base_value)
-                )
-            st.number_input(
-                label,
-                min_value=0.0,
-                step=5.0,
-                format="%.0f",
-                disabled=not eligible[key],
-                key=extended_key,
-                **extended_defaults,
+            st.caption(
+                "Dollar entry may exceed the displayed decision range. The marker pins at the red edge once spending is materially saturated."
             )
-        else:
-            slider_defaults = {}
-            if slider_key not in st.session_state:
-                slider_defaults["value"] = min(
-                    int(round(base_value / 5.0) * 5), normal_limits[key]
-                )
-            st.slider(
-                label,
-                min_value=0,
-                max_value=normal_limits[key],
-                step=5,
-                format="$%d",
-                disabled=not eligible[key],
-                key=slider_key,
-                **slider_defaults,
-            )
-            _saturation_track(
-                key,
-                1,
-                normal_limits[key],
-                slider_key,
-            )
-    if allow_higher:
-        st.warning(
-            "Direct entry can exceed the recommended range. Lift and ROAS still update, and saturated spending remains visible in review."
+        st.button(
+            "Save block",
+            type="primary",
+            use_container_width=True,
+            on_click=_close_spend_block_editor,
         )
 
     edited_blocks: list[SpendBlock] = []
