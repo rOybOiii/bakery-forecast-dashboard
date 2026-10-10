@@ -142,9 +142,9 @@ def _allocation_mode_changed() -> None:
         )
 
 
-def _switch_to_manual_schedule() -> None:
+def _switch_to_manual_schedule(selected_index: int) -> None:
     st.session_state["marketing_allocation_mode"] = "Manual schedule"
-    st.session_state.pop("marketing_editing_block_index", None)
+    st.session_state["marketing_editing_block_index"] = int(selected_index)
     for key in list(st.session_state):
         if key.startswith("marketing_block_") or key.startswith(
             "marketing_allow_higher_"
@@ -706,6 +706,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             "Switch to manual editing",
             use_container_width=True,
             on_click=_switch_to_manual_schedule,
+            args=(selected_index,),
         )
         return candidate
 
@@ -771,18 +772,13 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     extended_slider_defaults["value"] = min(
                         int(round(extended_amount / 5.0) * 5), normal_limits[key]
                     )
-                currency_column, amount_column = value_column.columns(
-                    [0.2, 0.8], gap="small", vertical_alignment="center"
-                )
-                currency_column.markdown(
-                    '<div class="channel-currency-symbol">$</div>',
-                    unsafe_allow_html=True,
-                )
-                direct_value = amount_column.number_input(
+                direct_value = value_column.number_input(
                     label,
                     min_value=0.0,
                     step=5.0,
                     format="%.0f",
+                    icon=":material/attach_money:",
+                    width=96,
                     disabled=not eligible[key],
                     key=extended_key,
                     label_visibility="collapsed",
@@ -1164,11 +1160,6 @@ def render_downtown_dashboard(bundle) -> None:
         .channel-spend-value span {
             color: var(--muted); font-size: .67rem; font-weight: 500;
             margin-left: .12rem;
-        }
-        .channel-currency-symbol {
-            color: var(--ink); font-size: 1rem; font-weight: 700;
-            display: flex; align-items: center; justify-content: flex-end;
-            height: 2.5rem; line-height: 1; text-align: right;
         }
         .extended-slider-amount {
             height: .95rem; position: relative; color: #2f6b55;
