@@ -438,6 +438,9 @@ def _saturation_track(
           .st-key-{widget_key} [data-testid="stSliderThumbValue"] {{
             {thumb_value_style}
           }}
+          .st-key-{widget_key} [data-testid="stSliderTickBar"] {{
+            display: none !important;
+          }}
         </style>
         <div class="saturation-labels slider-saturation-labels">
           <span>efficient</span><span>diminishing</span><span>saturated</span>
@@ -1148,7 +1151,7 @@ def render_downtown_dashboard(bundle) -> None:
             font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
             font-size: .6rem; line-height: 1; white-space: nowrap;
         }
-        .slider-saturation-labels { margin: -.8rem 0 .2rem; }
+        .slider-saturation-labels { margin: -.35rem 0 .3rem; }
         .channel-spend-label {
             color: var(--ink); font-size: .9rem; font-weight: 650;
             line-height: 1.15; padding-bottom: .35rem;
