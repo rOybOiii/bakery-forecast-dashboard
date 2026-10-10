@@ -7,12 +7,15 @@ from marketing_planning import (
     CHANNEL_ORDER,
     MarketingPlanState,
     block_channel_totals,
+    build_spend_blocks,
     empty_state,
     implement_plan,
     initialize_draft,
     load_plan_state,
     make_plan,
     optimize_allocations,
+    pause_days_by_active_block,
+    reflow_spend_blocks,
     save_draft,
     save_plan_state,
     score_plan,
@@ -135,6 +138,76 @@ def test_optimized_plan_builds_contiguous_budget_preserving_learning_blocks():
     totals = block_channel_totals(plan.spend_blocks)
     assert totals == {key: plan.channels[key].amount for key in CHANNEL_ORDER}
     assert len({block.daily_spend["search"] for block in plan.spend_blocks}) > 1
+
+
+def test_optimized_pause_is_zero_spend_and_reallocates_the_full_budget():
+    plan = make_plan(
+        restaurant="downtown",
+        start_date=date(2026, 10, 11),
+        end_date=date(2026, 10, 24),
+        total_budget=5750,
+        eligible={key: True for key in CHANNEL_ORDER},
+        allocation_mode="optimized",
+        allocations=None,
+        baseline_vintage="forecast-2-demo",
+        mmm_fit_version="mmm-demo-v1",
+        cadence_days=4,
+        pause_after={0: 2},
+    )
+    assert pause_days_by_active_block(plan.spend_blocks) == {0: 2}
+    pause = next(block for block in plan.spend_blocks if block.is_pause)
+    assert pause.duration_days == 2
+    assert all(value == 0 for value in pause.daily_spend.values())
+    assert plan.active_duration_days == 12
+    assert block_channel_totals(plan.spend_blocks) == {
+        key: plan.channels[key].amount for key in CHANNEL_ORDER
+    }
+    assert plan.total_budget == 5750
+    assert plan.spend_blocks[0].start == plan.start
+    assert plan.spend_blocks[-1].end == plan.end
+
+
+def test_manual_pause_reflows_later_blocks_without_overlap():
+    original = build_spend_blocks(
+        start_date=date(2026, 10, 11),
+        end_date=date(2026, 10, 24),
+        channel_totals={"search": 1400, "social": 700, "radio": 350},
+        cadence_days=4,
+    )
+    reflowed = reflow_spend_blocks(
+        original,
+        start_date=date(2026, 10, 11),
+        end_date=date(2026, 10, 24),
+        cadence_days=4,
+        pause_after={1: 2},
+    )
+    assert pause_days_by_active_block(reflowed) == {1: 2}
+    for left, right in zip(reflowed, reflowed[1:]):
+        assert right.start == left.end + timedelta(days=1)
+    active = [block for block in reflowed if not block.is_pause]
+    assert active[0].daily_spend == original[0].daily_spend
+    assert active[1].daily_spend == original[1].daily_spend
+    assert reflowed[-1].end == date(2026, 10, 24)
+
+
+def test_pause_schedule_survives_document_round_trip(tmp_path: Path):
+    path = tmp_path / "paused-plan.json"
+    plan = make_plan(
+        restaurant="downtown",
+        start_date=date(2026, 10, 11),
+        end_date=date(2026, 10, 24),
+        total_budget=3200,
+        eligible={key: True for key in CHANNEL_ORDER},
+        allocation_mode="optimized",
+        allocations=None,
+        baseline_vintage="forecast-2-demo",
+        mmm_fit_version="mmm-demo-v1",
+        pause_after={1: 2},
+    )
+    save_plan_state(path, save_draft(empty_state(), plan))
+    loaded = load_plan_state(path)
+    assert loaded.draft_plan is not None
+    assert pause_days_by_active_block(loaded.draft_plan.spend_blocks) == {1: 2}
 
 
 def test_learning_schedule_changes_daily_lift_without_changing_total_budget():

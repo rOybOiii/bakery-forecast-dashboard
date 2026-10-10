@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import json
-import math
 from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
@@ -50,6 +49,7 @@ class SpendBlock:
     end_date: str
     daily_spend: dict[str, float]
     locked: bool = False
+    is_pause: bool = False
 
     @property
     def start(self) -> date:
@@ -92,6 +92,14 @@ class MarketingPlan:
     @property
     def duration_days(self) -> int:
         return (self.end - self.start).days + 1
+
+    @property
+    def active_duration_days(self) -> int:
+        if not self.spend_blocks:
+            return self.duration_days
+        return sum(
+            block.duration_days for block in self.spend_blocks if not block.is_pause
+        )
 
 
 @dataclass(frozen=True)
@@ -151,6 +159,7 @@ def _plan_from_dict(raw: dict | None) -> MarketingPlan | None:
                 for key in CHANNEL_ORDER
             },
             locked=bool(block.get("locked", False)),
+            is_pause=bool(block.get("is_pause", False)),
         )
         for block in raw.get("spend_blocks", [])
     )
@@ -263,6 +272,10 @@ def validate_plan(
                 raise ValueError("Spend block channel set is incomplete")
             if any(value < 0 for value in block.daily_spend.values()):
                 raise ValueError("Spend block amounts cannot be negative")
+            if block.is_pause and any(
+                abs(value) > 0.009 for value in block.daily_spend.values()
+            ):
+                raise ValueError("Pause blocks must have zero spend")
             for key in CHANNEL_ORDER:
                 if not plan.channels[key].eligible and block.daily_spend[key] > 0.009:
                     raise ValueError("Ineligible channels cannot receive block spend")
@@ -332,6 +345,81 @@ def optimize_allocations(
     return allocation
 
 
+def pause_days_by_active_block(
+    blocks: Iterable[SpendBlock],
+) -> dict[int, int]:
+    """Return whole-plan pause days following each active spend block."""
+
+    pauses: dict[int, int] = {}
+    active_index = -1
+    for block in blocks:
+        if block.is_pause:
+            if active_index >= 0:
+                pauses[active_index] = pauses.get(active_index, 0) + block.duration_days
+        else:
+            active_index += 1
+    return pauses
+
+
+def _spend_schedule_layout(
+    *,
+    start_date: date,
+    end_date: date,
+    cadence_days: int,
+    pause_after: dict[int, int] | None = None,
+) -> list[tuple[date, date, bool, int]]:
+    """Build a complete, non-overlapping schedule with explicit pause rows."""
+
+    duration_days = (end_date - start_date).days + 1
+    base_durations: list[int] = []
+    remaining = duration_days
+    while remaining > 0:
+        block_days = min(cadence_days, remaining)
+        base_durations.append(block_days)
+        remaining -= block_days
+
+    requested = {
+        int(index): max(0, int(days))
+        for index, days in (pause_after or {}).items()
+        if int(index) >= 0 and int(days) > 0
+    }
+    maximum_pause_days = max(0, duration_days - len(base_durations))
+    pause_budget = min(sum(requested.values()), maximum_pause_days)
+    pauses: dict[int, int] = {}
+    for index in sorted(requested):
+        if index >= len(base_durations) or pause_budget <= 0:
+            continue
+        days = min(requested[index], pause_budget)
+        pauses[index] = days
+        pause_budget -= days
+
+    active_days = duration_days - sum(pauses.values())
+    active_durations = list(base_durations)
+    excess = sum(active_durations) - active_days
+    for index in range(len(active_durations) - 1, -1, -1):
+        removable = max(0, active_durations[index] - 1)
+        removed = min(removable, excess)
+        active_durations[index] -= removed
+        excess -= removed
+        if excess == 0:
+            break
+
+    layout: list[tuple[date, date, bool, int]] = []
+    cursor = start_date
+    for active_index, block_days in enumerate(active_durations):
+        block_end = cursor + timedelta(days=block_days - 1)
+        layout.append((cursor, block_end, False, active_index))
+        cursor = block_end + timedelta(days=1)
+        pause_days = pauses.get(active_index, 0)
+        if pause_days:
+            pause_end = cursor + timedelta(days=pause_days - 1)
+            layout.append((cursor, pause_end, True, active_index))
+            cursor = pause_end + timedelta(days=1)
+    if cursor != end_date + timedelta(days=1):
+        raise ValueError("Pause schedule does not cover the full plan period")
+    return layout
+
+
 def build_spend_blocks(
     *,
     start_date: date,
@@ -339,19 +427,21 @@ def build_spend_blocks(
     channel_totals: dict[str, float],
     cadence_days: int = 4,
     optimization_goal: str = "balanced",
+    pause_after: dict[int, int] | None = None,
 ) -> tuple[SpendBlock, ...]:
-    """Create one contiguous plan with staggered, budget-preserving spend blocks."""
+    """Create a complete plan with staggered spend and optional zero-spend pauses."""
 
     if cadence_days < 1:
         raise ValueError("cadence_days must be positive")
     if optimization_goal not in {"sales", "balanced", "learning"}:
         raise ValueError("Unknown optimization goal")
-    blocks: list[tuple[date, date]] = []
-    cursor = start_date
-    while cursor <= end_date:
-        block_end = min(end_date, cursor + timedelta(days=cadence_days - 1))
-        blocks.append((cursor, block_end))
-        cursor = block_end + timedelta(days=1)
+    layout = _spend_schedule_layout(
+        start_date=start_date,
+        end_date=end_date,
+        cadence_days=cadence_days,
+        pause_after=pause_after,
+    )
+    active_blocks = [entry for entry in layout if not entry[2]]
 
     variation = {"sales": 0.0, "balanced": 0.24, "learning": 0.42}[
         optimization_goal
@@ -365,11 +455,13 @@ def build_spend_blocks(
     for channel in CHANNEL_ORDER:
         factors = [
             1.0 + variation * (patterns[channel][index % 4] - 1.0)
-            for index in range(len(blocks))
+            for index in range(len(active_blocks))
         ]
         weighted_days = sum(
             factor * ((block_end - block_start).days + 1)
-            for factor, (block_start, block_end) in zip(factors, blocks)
+            for factor, (block_start, block_end, _, _) in zip(
+                factors, active_blocks
+            )
         )
         base_daily = (
             float(channel_totals.get(channel, 0.0)) / weighted_days
@@ -380,18 +472,68 @@ def build_spend_blocks(
             round(base_daily * factor, 6) for factor in factors
         ]
 
-    result = tuple(
-        SpendBlock(
-            start_date=block_start.isoformat(),
-            end_date=block_end.isoformat(),
-            daily_spend={
-                channel: daily_by_channel[channel][index]
-                for channel in CHANNEL_ORDER
-            },
+    result: list[SpendBlock] = []
+    for block_start, block_end, is_pause, active_index in layout:
+        result.append(
+            SpendBlock(
+                start_date=block_start.isoformat(),
+                end_date=block_end.isoformat(),
+                daily_spend={
+                    channel: (
+                        0.0
+                        if is_pause
+                        else daily_by_channel[channel][active_index]
+                    )
+                    for channel in CHANNEL_ORDER
+                },
+                is_pause=is_pause,
+            )
         )
-        for index, (block_start, block_end) in enumerate(blocks)
+    return tuple(result)
+
+
+def reflow_spend_blocks(
+    blocks: Iterable[SpendBlock],
+    *,
+    start_date: date,
+    end_date: date,
+    cadence_days: int,
+    pause_after: dict[int, int] | None = None,
+) -> tuple[SpendBlock, ...]:
+    """Reflow manual blocks around pauses while retaining their daily amounts."""
+
+    templates = [block for block in blocks if not block.is_pause]
+    if not templates:
+        templates = [
+            SpendBlock(
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                daily_spend={key: 0.0 for key in CHANNEL_ORDER},
+            )
+        ]
+    layout = _spend_schedule_layout(
+        start_date=start_date,
+        end_date=end_date,
+        cadence_days=cadence_days,
+        pause_after=pause_after,
     )
-    return result
+    result: list[SpendBlock] = []
+    for block_start, block_end, is_pause, active_index in layout:
+        template = templates[min(active_index, len(templates) - 1)]
+        result.append(
+            SpendBlock(
+                start_date=block_start.isoformat(),
+                end_date=block_end.isoformat(),
+                daily_spend=(
+                    {key: 0.0 for key in CHANNEL_ORDER}
+                    if is_pause
+                    else dict(template.daily_spend)
+                ),
+                locked=False if is_pause else template.locked,
+                is_pause=is_pause,
+            )
+        )
+    return tuple(result)
 
 
 def block_channel_totals(
@@ -420,6 +562,7 @@ def make_plan(
     optimization_goal: str = "balanced",
     cadence_days: int = 4,
     spend_blocks: Iterable[SpendBlock] | None = None,
+    pause_after: dict[int, int] | None = None,
 ) -> MarketingPlan:
     duration = (end_date - start_date).days + 1
     supplied_blocks = tuple(spend_blocks or ())
@@ -427,10 +570,20 @@ def make_plan(
         values = block_channel_totals(supplied_blocks)
         total_budget = round(sum(values.values()), 2)
     elif allocation_mode == "optimized":
+        requested_pause_days = sum(
+            (block_end - block_start).days + 1
+            for block_start, block_end, is_pause, _ in _spend_schedule_layout(
+                start_date=start_date,
+                end_date=end_date,
+                cadence_days=cadence_days,
+                pause_after=pause_after,
+            )
+            if is_pause
+        )
         values = optimize_allocations(
             total_budget,
             [key for key, is_eligible in eligible.items() if is_eligible],
-            duration,
+            duration - requested_pause_days,
         )
     else:
         values = {
@@ -443,6 +596,7 @@ def make_plan(
         channel_totals=values,
         cadence_days=cadence_days,
         optimization_goal=optimization_goal,
+        pause_after=pause_after,
     )
     channels = {
         key: ChannelPlan(bool(eligible.get(key, False)), values[key])
@@ -513,6 +667,7 @@ def initialize_draft(
             },
             cadence_days=published.cadence_days,
             optimization_goal=published.optimization_goal,
+            pause_after=pause_days_by_active_block(published.spend_blocks),
         )
         return replace(
             published,
@@ -627,12 +782,12 @@ def score_plan(baseline: pd.DataFrame, plan: MarketingPlan) -> ScenarioResult:
                 _channel_total_lift(
                     key,
                     plan.channels[key].amount + epsilon,
-                    plan.duration_days,
+                    plan.active_duration_days,
                 )
                 - _channel_total_lift(
                     key,
                     plan.channels[key].amount,
-                    plan.duration_days,
+                    plan.active_duration_days,
                 )
             )
             / epsilon
@@ -650,7 +805,9 @@ def score_plan(baseline: pd.DataFrame, plan: MarketingPlan) -> ScenarioResult:
         carryover_beyond_horizon=float(carryover),
     )
     saturation = {
-        key: saturation_zone(key, plan.channels[key].amount, plan.duration_days)
+        key: saturation_zone(
+            key, plan.channels[key].amount, plan.active_duration_days
+        )
         for key in CHANNEL_ORDER
     }
     return ScenarioResult(

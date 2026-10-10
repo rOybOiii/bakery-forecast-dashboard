@@ -30,7 +30,9 @@ from marketing_planning import (
     initialize_draft,
     load_plan_state,
     make_plan,
+    pause_days_by_active_block,
     plans_equivalent,
+    reflow_spend_blocks,
     saturation_thresholds,
     save_draft,
     save_plan_state,
@@ -115,6 +117,8 @@ def _apply_pending_widget_clear() -> None:
     for key in list(st.session_state):
         if key.startswith("marketing_block_") or key.startswith(
             "marketing_allow_higher_"
+        ) or key.startswith(
+            "marketing_pause_after_"
         ):
             st.session_state.pop(key, None)
 
@@ -533,6 +537,24 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             key="marketing_cadence_days",
         )
     )
+    base_block_count = (duration + cadence - 1) // cadence
+    maximum_pause_days = max(0, duration - base_block_count)
+    saved_pauses = pause_days_by_active_block(plan.spend_blocks)
+    pause_after: dict[int, int] = {}
+    pause_capacity = maximum_pause_days
+    for active_index in range(base_block_count):
+        pause_key = f"marketing_pause_after_{active_index}"
+        requested = int(
+            st.session_state.get(
+                pause_key, saved_pauses.get(active_index, 0)
+            )
+        )
+        accepted = min(max(0, requested), pause_capacity)
+        if pause_key in st.session_state and requested != accepted:
+            st.session_state[pause_key] = accepted
+        if accepted:
+            pause_after[active_index] = accepted
+            pause_capacity -= accepted
     budget_slot = st.empty()
     if mode == "optimized":
         budget_value = {}
@@ -585,6 +607,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             plan_id=plan.plan_id,
             optimization_goal=optimization_goal,
             cadence_days=cadence,
+            pause_after=pause_after,
         )
         blocks = candidate.spend_blocks
     else:
@@ -594,7 +617,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             and plan.end == end
             and plan.cadence_days == cadence
         )
-        blocks = (
+        source_blocks = (
             plan.spend_blocks
             if same_shape
             else build_spend_blocks(
@@ -608,18 +631,32 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                 optimization_goal=optimization_goal,
             )
         )
+        blocks = reflow_spend_blocks(
+            source_blocks,
+            start_date=start,
+            end_date=end,
+            cadence_days=cadence,
+            pause_after=pause_after,
+        )
 
         # Reflect any saved widget edits in the schedule summary before rendering it.
         # Streamlit reruns top-to-bottom, so the preview rows must read the current
         # widget state rather than the original draft blocks.
         current_blocks: list[SpendBlock] = []
-        for index, block in enumerate(blocks):
+        active_index = -1
+        for block in blocks:
+            if block.is_pause:
+                current_blocks.append(block)
+                continue
+            active_index += 1
             block_allows_higher = bool(
-                st.session_state.get(f"marketing_allow_higher_{index}", False)
+                st.session_state.get(
+                    f"marketing_allow_higher_{active_index}", False
+                )
             )
             daily_spend: dict[str, float] = {}
             for key in CHANNEL_ORDER:
-                slider_key = f"marketing_block_{index}_{key}"
+                slider_key = f"marketing_block_{active_index}_{key}"
                 extended_key = f"{slider_key}_extended"
                 if not eligible[key]:
                     value = 0.0
@@ -636,12 +673,18 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     end_date=block.end_date,
                     daily_spend=daily_spend,
                     locked=block.locked,
+                    is_pause=False,
                 )
             )
         blocks = tuple(current_blocks)
 
-    def block_label(index: int) -> str:
-        block = blocks[index]
+    active_block_indices = [
+        index for index, block in enumerate(blocks) if not block.is_pause
+    ]
+    actual_pauses = pause_days_by_active_block(blocks)
+
+    def block_label(active_index: int) -> str:
+        block = blocks[active_block_indices[active_index]]
         if mode == "manual":
             return f"{block.start:%b %-d}–{block.end:%b %-d}"
         daily_total = sum(block.daily_spend.values())
@@ -650,25 +693,35 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             f"{_money(daily_total)}/day"
         )
 
-    block_captions = [
-        " · ".join(
+    block_captions = []
+    for active_index, physical_index in enumerate(active_block_indices):
+        block = blocks[physical_index]
+        caption = " · ".join(
             f"{CHANNEL_SPECS[key].label} {_money(block.daily_spend[key])}"
             for key in CHANNEL_ORDER
-        ).replace("$", r"\$")
-        for block in blocks
-    ]
+        )
+        pause_days = actual_pauses.get(active_index, 0)
+        if pause_days:
+            pause_block = blocks[physical_index + 1]
+            caption += (
+                f" · No spend {pause_block.start:%b %-d}–{pause_block.end:%b %-d}"
+                f" ({pause_days} day{'s' if pause_days != 1 else ''})"
+            )
+        block_captions.append(caption.replace("$", r"\$"))
     editing_index = (
         st.session_state.get("marketing_editing_block_index")
         if mode == "manual"
         else None
     )
-    if editing_index is not None and not 0 <= int(editing_index) < len(blocks):
+    if editing_index is not None and not 0 <= int(editing_index) < len(
+        active_block_indices
+    ):
         st.session_state.pop("marketing_editing_block_index", None)
         editing_index = None
     st.markdown("**Spend schedule**")
     selected_block = st.radio(
         "Spending schedule",
-        options=list(range(len(blocks))),
+        options=list(range(len(active_block_indices))),
         format_func=block_label,
         captions=block_captions,
         key="marketing_selected_block_index",
@@ -677,11 +730,28 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         disabled=editing_index is not None,
     )
     selected_index = int(selected_block)
+    selected = blocks[active_block_indices[selected_index]]
+
+    current_pause_days = actual_pauses.get(selected_index, 0)
+    other_pause_days = sum(actual_pauses.values()) - current_pause_days
+    selected_pause_limit = max(0, maximum_pause_days - other_pause_days)
+    pause_key = f"marketing_pause_after_{selected_index}"
+    pause_defaults = {}
+    if pause_key not in st.session_state:
+        pause_defaults["value"] = current_pause_days
+    st.number_input(
+        "Pause after selected block",
+        min_value=0,
+        max_value=selected_pause_limit,
+        step=1,
+        key=pause_key,
+        help="Adds whole-plan no-spend days and shifts every later block without overlap.",
+        **pause_defaults,
+    )
 
     if mode == "optimized":
-        selected = blocks[selected_index]
         st.caption(
-            f"Selected block: {selected.duration_days} days. The optimizer staggers channel changes while preserving the total budget."
+            rf"Selected block: {selected.duration_days} active days. Pauses are fixed at \$0 while the optimizer reallocates the budget across the remaining days."
         )
         st.button(
             "Switch to manual editing",
@@ -700,7 +770,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         )
     else:
         selected_index = int(editing_index)
-        selected = blocks[selected_index]
+        selected = blocks[active_block_indices[selected_index]]
         st.markdown(
             f"**Edit {selected.start:%b %-d}–{selected.end:%b %-d}** · daily spend"
         )
@@ -753,7 +823,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     extended_slider_defaults["value"] = min(
                         int(round(extended_amount / 5.0) * 5), normal_limits[key]
                     )
-                direct_value = value_column.number_input(
+                value_column.number_input(
                     label,
                     min_value=0.0,
                     step=5.0,
@@ -824,20 +894,27 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         )
 
     edited_blocks: list[SpendBlock] = []
-    for index, block in enumerate(blocks):
+    active_index = -1
+    for block in blocks:
+        if block.is_pause:
+            edited_blocks.append(block)
+            continue
+        active_index += 1
         daily_spend: dict[str, float] = {}
         block_allows_higher = bool(
-            st.session_state.get(f"marketing_allow_higher_{index}", False)
+            st.session_state.get(
+                f"marketing_allow_higher_{active_index}", False
+            )
         )
         for key in CHANNEL_ORDER:
+            slider_key = f"marketing_block_{active_index}_{key}"
+            extended_key = f"{slider_key}_extended"
             if not eligible[key]:
                 value = 0.0
-            elif block_allows_higher and f"marketing_block_{index}_{key}_extended" in st.session_state:
-                value = float(
-                    st.session_state[f"marketing_block_{index}_{key}_extended"]
-                )
-            elif f"marketing_block_{index}_{key}" in st.session_state:
-                value = float(st.session_state[f"marketing_block_{index}_{key}"])
+            elif block_allows_higher and extended_key in st.session_state:
+                value = float(st.session_state[extended_key])
+            elif slider_key in st.session_state:
+                value = float(st.session_state[slider_key])
             else:
                 value = float(block.daily_spend[key])
             daily_spend[key] = value
@@ -846,14 +923,16 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                 start_date=block.start_date,
                 end_date=block.end_date,
                 daily_spend=daily_spend,
-                locked=index == selected_index or block.locked,
+                locked=active_index == selected_index or block.locked,
+                is_pause=False,
             )
         )
     total_budget = sum(
         sum(block.daily_spend.values()) * block.duration_days
         for block in edited_blocks
     )
-    edited_selected = edited_blocks[selected_index]
+    edited_active_blocks = [block for block in edited_blocks if not block.is_pause]
+    edited_selected = edited_active_blocks[selected_index]
     selected_daily_total = sum(edited_selected.daily_spend.values())
     selected_mix = " · ".join(
         f"{CHANNEL_SPECS[key].label} {_money(edited_selected.daily_spend[key])}"
