@@ -344,25 +344,30 @@ def _operational_chart(
     )
 
 
-def _saturation_bar(channel: str, amount: float, duration_days: int) -> None:
+def _saturation_track(
+    channel: str,
+    duration_days: int,
+    maximum: int,
+    widget_key: str,
+) -> None:
     yellow, red = saturation_thresholds(channel, duration_days)
-    maximum = max(red * 1.35, amount * 1.10, 1.0)
-    marker = min(100.0, amount / maximum * 100.0)
-    yellow_pct = yellow / maximum * 100.0
-    red_pct = red / maximum * 100.0
-    st.markdown(
+    yellow_pct = min(100.0, yellow / maximum * 100.0)
+    red_pct = min(100.0, red / maximum * 100.0)
+    st.html(
         f"""
-        <div class="saturation-row">
-          <div class="saturation-track" style="background:linear-gradient(90deg,
+        <style>
+          .st-key-{widget_key} [role="group"] > div > div:first-child {{
+            background: linear-gradient(90deg,
             #8eb59e 0%, #8eb59e {yellow_pct:.1f}%,
             #e2bc62 {yellow_pct:.1f}%, #e2bc62 {red_pct:.1f}%,
-            #d86d53 {red_pct:.1f}%, #d86d53 100%);">
-            <span class="saturation-marker" style="left:{marker:.1f}%"></span>
-          </div>
-          <div class="saturation-labels"><span>efficient</span><span>diminishing</span><span>saturated</span></div>
+            #d86d53 {red_pct:.1f}%, #d86d53 100%) !important;
+            opacity: 1 !important;
+          }}
+        </style>
+        <div class="saturation-labels">
+          <span>efficient</span><span>diminishing</span><span>saturated</span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -370,29 +375,38 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     period_default = (
         "7 days" if plan.duration_days == 7 else "14 days" if plan.duration_days == 14 else "Custom"
     )
-    start = st.date_input(
-        "Plan starts",
-        value=max(plan.start, date.today()),
-        min_value=date.today(),
-        key="marketing_start_date",
-    )
     period = st.segmented_control(
         "Plan period",
         options=["7 days", "14 days", "Custom"],
         default=period_default,
         key="marketing_period",
+        width="stretch",
     ) or period_default
-    if period == "7 days":
-        end = start + timedelta(days=6)
-    elif period == "14 days":
-        end = start + timedelta(days=13)
-    else:
-        end = st.date_input(
-            "Plan ends",
+    if period == "Custom":
+        date_columns = st.columns(2)
+        start = date_columns[0].date_input(
+            "Start date",
+            value=max(plan.start, date.today()),
+            min_value=date.today(),
+            key="marketing_start_date",
+        )
+        end = date_columns[1].date_input(
+            "End date",
             value=max(plan.end, start),
             min_value=start,
             key="marketing_end_date",
         )
+    else:
+        start = st.date_input(
+            "Plan starts",
+            value=max(plan.start, date.today()),
+            min_value=date.today(),
+            key="marketing_start_date",
+        )
+    if period == "7 days":
+        end = start + timedelta(days=6)
+    elif period == "14 days":
+        end = start + timedelta(days=13)
     duration = (end - start).days + 1
     total_budget = st.slider(
         "Total planned spend",
@@ -418,13 +432,13 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     if total_budget > 0 and not any(eligible.values()):
         st.error("Turn on at least one channel before allocating a positive budget.")
         return None
-    mode_label = st.radio(
-        "Allocation",
+    mode_label = st.segmented_control(
+        "Allocation approach",
         ["Optimize mix", "Manual override"],
-        index=0 if plan.allocation_mode == "optimized" else 1,
-        horizontal=True,
+        default="Optimize mix" if plan.allocation_mode == "optimized" else "Manual override",
         key="marketing_allocation_mode",
-    )
+        width="stretch",
+    ) or "Optimize mix"
     mode = "optimized" if mode_label == "Optimize mix" else "manual"
     if mode == "optimized":
         allocations = None
@@ -451,31 +465,54 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                 (CHANNEL_ORDER.index(value) for value in eligible_keys), default=-1
             ):
                 default = max(0.0, remaining)
-            amount = st.number_input(
-                f"{CHANNEL_SPECS[key].label} allocation",
-                min_value=0.0,
-                max_value=float(total_budget),
-                value=float(min(default, total_budget)) if eligible[key] else 0.0,
-                step=100.0,
-                disabled=not eligible[key],
-                key=f"marketing_manual_{key}",
-            )
-            values[key] = float(amount) if eligible[key] else 0.0
+            values[key] = float(min(default, total_budget)) if eligible[key] else 0.0
             remaining -= values[key]
-        if abs(sum(values.values()) - total_budget) > 0.02:
-            st.warning(
-                f"Channel allocations must total {_money(total_budget)}; currently {_money(sum(values.values()))}."
-            )
-            return None
-        allocations = values
     st.markdown("**Proposed channel mix**")
     for key in CHANNEL_ORDER:
         label = CHANNEL_SPECS[key].label
-        amount = values[key]
-        label_column, value_column = st.columns([3, 1])
-        label_column.caption(label if eligible[key] else f"{label} · off")
-        value_column.markdown(f"<div style='text-align:right'>{_money(amount)}</div>", unsafe_allow_html=True)
-        _saturation_bar(key, amount, duration)
+        maximum = max(total_budget, 100)
+        if mode == "optimized":
+            slider_key = f"marketing_optimized_{key}"
+            amount = st.slider(
+                label if eligible[key] else f"{label} · off",
+                min_value=0,
+                max_value=maximum,
+                value=int(round(values[key])),
+                step=25,
+                format="$%d",
+                disabled=True,
+                key=slider_key,
+            )
+        else:
+            slider_key = f"marketing_manual_{key}"
+            if slider_key in st.session_state:
+                st.session_state[slider_key] = min(
+                    int(st.session_state[slider_key]), maximum
+                )
+                if not eligible[key]:
+                    st.session_state[slider_key] = 0
+            amount = st.slider(
+                label if eligible[key] else f"{label} · off",
+                min_value=0,
+                max_value=maximum,
+                value=int(round(values[key])),
+                step=25,
+                format="$%d",
+                disabled=not eligible[key] or total_budget == 0,
+                key=slider_key,
+            )
+            values[key] = float(amount) if eligible[key] else 0.0
+        _saturation_track(key, duration, maximum, slider_key)
+    if mode == "manual":
+        allocated = sum(values.values())
+        difference = total_budget - allocated
+        if abs(difference) > 0.02:
+            direction = "left to allocate" if difference > 0 else "over budget"
+            st.warning(
+                f"{_money(abs(difference))} {direction}. Adjust the channel sliders so the mix totals {_money(total_budget)}."
+            )
+            return None
+        allocations = values
     return make_plan(
         restaurant=RESTAURANT,
         start_date=start,
@@ -708,13 +745,10 @@ def render_downtown_dashboard(bundle) -> None:
         }
         .draft-mode-label { background: #f4d9ce; color: #a84e34; }
         .published-mode-label { background: #dfe9e1; color: #2f6b55; }
-        .saturation-row { margin: -.25rem 0 .55rem; }
-        .saturation-track { position: relative; height: 8px; border-radius: 999px; overflow: visible; }
-        .saturation-marker {
-            position: absolute; width: 3px; height: 15px; top: -3px; border-radius: 2px;
-            background: #1d2a24; transform: translateX(-1px);
+        .saturation-labels {
+            display: flex; justify-content: space-between; color: #77827b;
+            font-size: .65rem; margin: -1rem 0 .35rem;
         }
-        .saturation-labels { display: flex; justify-content: space-between; color: #77827b; font-size: .65rem; margin-top: 2px; }
         section[role="dialog"]:has(.st-key-marketing_start_date) {
             width: min(520px, 94vw) !important;
             max-width: 520px !important;
