@@ -160,6 +160,17 @@ def _close_spend_block_editor() -> None:
     st.session_state.pop("marketing_editing_block_index", None)
 
 
+def _sync_extended_amount_to_slider(
+    amount_key: str, slider_key: str, maximum: int
+) -> None:
+    amount = max(0.0, float(st.session_state.get(amount_key, 0.0)))
+    st.session_state[slider_key] = min(int(round(amount / 5.0) * 5), maximum)
+
+
+def _sync_extended_slider_to_amount(slider_key: str, amount_key: str) -> None:
+    st.session_state[amount_key] = float(st.session_state.get(slider_key, 0.0))
+
+
 def _begin_working_draft(state: MarketingPlanState, baseline: pd.DataFrame) -> None:
     if "marketing_working_plan" not in st.session_state:
         plan = initialize_draft(
@@ -416,37 +427,14 @@ def _saturation_track(
             #d86d53 {red_pct:.1f}%, #d86d53 100%) !important;
             opacity: 1 !important;
           }}
+          .st-key-{widget_key} [role="slider"] {{
+            width: 18px !important; height: 18px !important;
+            border: 2px solid #f7f4ec !important;
+            box-shadow: 0 0 0 1px #2f6b55 !important;
+          }}
         </style>
         <div class="saturation-labels slider-saturation-labels">
           <span>efficient</span><span>diminishing</span><span>saturated</span>
-        </div>
-        """
-    )
-
-
-def _saturation_gauge(channel: str, value: float, maximum: int) -> None:
-    """Show direct-entry spend on the same decision range as the sliders."""
-
-    yellow, red = saturation_thresholds(channel, 1)
-    yellow_pct = min(100.0, yellow / maximum * 100.0)
-    red_pct = min(100.0, red / maximum * 100.0)
-    marker_pct = min(99.2, max(0.8, float(value) / maximum * 100.0))
-    st.html(
-        f"""
-        <div style="padding: 0.15rem 0 0.45rem;">
-          <div style="position:relative;height:8px;border-radius:999px;
-            background:linear-gradient(90deg,
-            #8eb59e 0%, #8eb59e {yellow_pct:.1f}%,
-            #e2bc62 {yellow_pct:.1f}%, #e2bc62 {red_pct:.1f}%,
-            #d86d53 {red_pct:.1f}%, #d86d53 100%);">
-            <div style="position:absolute;left:{marker_pct:.1f}%;top:50%;
-              width:14px;height:14px;border-radius:50%;background:#2f6b55;
-              border:2px solid #f7f4ec;box-shadow:0 0 0 1px #2f6b55;
-              transform:translate(-50%,-50%);"></div>
-          </div>
-          <div class="saturation-labels gauge-saturation-labels">
-            <span>efficient</span><span>diminishing</span><span>saturated</span>
-          </div>
         </div>
         """
     )
@@ -746,7 +734,23 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     extended_defaults["value"] = float(
                         st.session_state.get(slider_key, base_value)
                     )
-                direct_value = value_column.number_input(
+                extended_slider_key = f"{slider_key}_extended_range"
+                extended_slider_defaults = {}
+                if extended_slider_key not in st.session_state:
+                    extended_amount = float(
+                        st.session_state.get(extended_key, base_value)
+                    )
+                    extended_slider_defaults["value"] = min(
+                        int(round(extended_amount / 5.0) * 5), normal_limits[key]
+                    )
+                currency_column, amount_column = value_column.columns(
+                    [0.18, 0.82], gap="small", vertical_alignment="center"
+                )
+                currency_column.markdown(
+                    '<div class="channel-currency-symbol">$</div>',
+                    unsafe_allow_html=True,
+                )
+                amount_column.number_input(
                     label,
                     min_value=0.0,
                     step=5.0,
@@ -754,10 +758,30 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     disabled=not eligible[key],
                     key=extended_key,
                     label_visibility="collapsed",
+                    on_change=_sync_extended_amount_to_slider,
+                    args=(extended_key, extended_slider_key, normal_limits[key]),
                     **extended_defaults,
                 )
                 with range_column:
-                    _saturation_gauge(key, float(direct_value), normal_limits[key])
+                    st.slider(
+                        f"{label} decision range",
+                        min_value=0,
+                        max_value=normal_limits[key],
+                        step=5,
+                        format="$%d",
+                        disabled=not eligible[key],
+                        key=extended_slider_key,
+                        label_visibility="collapsed",
+                        on_change=_sync_extended_slider_to_amount,
+                        args=(extended_slider_key, extended_key),
+                        **extended_slider_defaults,
+                    )
+                    _saturation_track(
+                        key,
+                        1,
+                        normal_limits[key],
+                        extended_slider_key,
+                    )
             else:
                 slider_defaults = {}
                 if slider_key not in st.session_state:
@@ -837,7 +861,16 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
         f"Selected block total: {_money(selected_daily_total)}/day · {selected_mix}"
     )
     st.caption(selected_summary.replace("$", r"\$"))
-    budget_slot.metric("Total planned spend", _money(total_budget))
+    budget_slot.markdown(
+        f"""
+        <div class="manual-plan-total">
+          <span>Total planned spend</span>
+          <strong>{_money(total_budget)}</strong>
+          <small>Calculated from the manual spend blocks</small>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     return make_plan(
         restaurant=RESTAURANT,
         start_date=start,
@@ -875,12 +908,16 @@ def _marketing_drawer(baseline: pd.DataFrame) -> None:
         impact_columns = st.columns(2)
         impact_columns[0].metric("Expected lift", _money(result.summary.marketing_lift, signed=True))
         impact_columns[1].metric("Average ROAS", f"{result.summary.average_roas:.2f}×")
-        learning_label = {
-            "sales": "Light",
-            "balanced": "Good",
-            "learning": "Strong",
+        learning_target = {
+            "sales": "Sales-first",
+            "balanced": "Balanced",
+            "learning": "Learn faster",
         }[candidate.optimization_goal]
-        st.caption(f"Learning quality: **{learning_label}**")
+        st.caption(f"Learning target: **{learning_target}**")
+        if candidate.allocation_mode == "manual":
+            st.caption(
+                "Manual changes are not yet dynamically scored for expected MMM learning."
+            )
         if result.summary.carryover_beyond_horizon > 1:
             st.caption(
                 f"Estimated carryover after the visible horizon: "
@@ -1085,7 +1122,6 @@ def render_downtown_dashboard(bundle) -> None:
             font-size: .6rem; line-height: 1; white-space: nowrap;
         }
         .slider-saturation-labels { margin: -.8rem 0 .2rem; }
-        .gauge-saturation-labels { margin: .3rem 0 0; }
         .channel-spend-label {
             color: var(--ink); font-size: .9rem; font-weight: 650;
             line-height: 1.15; padding-bottom: .35rem;
@@ -1099,6 +1135,22 @@ def render_downtown_dashboard(bundle) -> None:
             color: var(--muted); font-size: .67rem; font-weight: 500;
             margin-left: .12rem;
         }
+        .channel-currency-symbol {
+            color: var(--ink); font-size: 1rem; font-weight: 700;
+            line-height: 2.5rem; text-align: right;
+        }
+        .manual-plan-total {
+            background: #e8ebe5; border: 1px solid #d8ddd6; border-radius: 12px;
+            color: #66716a; padding: .72rem .9rem; margin: .15rem 0 .5rem;
+        }
+        .manual-plan-total span, .manual-plan-total small {
+            display: block; font-size: .72rem; line-height: 1.2;
+        }
+        .manual-plan-total strong {
+            display: block; color: #525d56; font-size: 1.45rem;
+            line-height: 1.15; margin: .15rem 0;
+        }
+        .manual-plan-total small { color: #879089; }
         section[role="dialog"]:has(.st-key-marketing_start_date) {
             width: min(520px, 94vw) !important;
             max-width: 520px !important;
