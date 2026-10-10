@@ -6,6 +6,7 @@ import pandas as pd
 from marketing_planning import (
     CHANNEL_ORDER,
     MarketingPlanState,
+    block_channel_totals,
     empty_state,
     implement_plan,
     initialize_draft,
@@ -112,6 +113,49 @@ def test_scorer_returns_marketing_lift_uncertainty_and_carryover():
     assert result.summary.carryover_beyond_horizon > 0
     assert (result.daily["operational_q05"] < result.daily["operational_q95"]).all()
     assert set(result.saturation) == set(CHANNEL_ORDER)
+
+
+def test_optimized_plan_builds_contiguous_budget_preserving_learning_blocks():
+    plan = make_plan(
+        restaurant="downtown",
+        start_date=date(2026, 10, 11),
+        end_date=date(2026, 10, 24),
+        total_budget=5750,
+        eligible={key: True for key in CHANNEL_ORDER},
+        allocation_mode="optimized",
+        allocations=None,
+        baseline_vintage="forecast-2-demo",
+        mmm_fit_version="mmm-demo-v1",
+        optimization_goal="balanced",
+        cadence_days=4,
+    )
+    assert [block.duration_days for block in plan.spend_blocks] == [4, 4, 4, 2]
+    assert plan.spend_blocks[0].start == plan.start
+    assert plan.spend_blocks[-1].end == plan.end
+    totals = block_channel_totals(plan.spend_blocks)
+    assert totals == {key: plan.channels[key].amount for key in CHANNEL_ORDER}
+    assert len({block.daily_spend["search"] for block in plan.spend_blocks}) > 1
+
+
+def test_learning_schedule_changes_daily_lift_without_changing_total_budget():
+    common = dict(
+        restaurant="downtown",
+        start_date=date(2026, 10, 11),
+        end_date=date(2026, 10, 24),
+        total_budget=4200,
+        eligible={key: True for key in CHANNEL_ORDER},
+        allocation_mode="optimized",
+        allocations=None,
+        baseline_vintage="forecast-2-demo",
+        mmm_fit_version="mmm-demo-v1",
+        cadence_days=4,
+    )
+    sales_plan = make_plan(**common, optimization_goal="sales")
+    learning_plan = make_plan(**common, optimization_goal="learning")
+    assert sales_plan.total_budget == learning_plan.total_budget == 4200
+    sales = score_plan(baseline(), sales_plan)
+    learning = score_plan(baseline(), learning_plan)
+    assert not sales.daily["marketing_lift"].equals(learning.daily["marketing_lift"])
 
 
 def test_document_save_draft_then_implement_is_atomic_and_reloads(tmp_path: Path):

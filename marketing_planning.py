@@ -45,6 +45,26 @@ class ChannelPlan:
 
 
 @dataclass(frozen=True)
+class SpendBlock:
+    start_date: str
+    end_date: str
+    daily_spend: dict[str, float]
+    locked: bool = False
+
+    @property
+    def start(self) -> date:
+        return date.fromisoformat(self.start_date)
+
+    @property
+    def end(self) -> date:
+        return date.fromisoformat(self.end_date)
+
+    @property
+    def duration_days(self) -> int:
+        return (self.end - self.start).days + 1
+
+
+@dataclass(frozen=True)
 class MarketingPlan:
     plan_id: str
     restaurant: str
@@ -57,6 +77,9 @@ class MarketingPlan:
     mmm_fit_version: str
     updated_at: str
     author: str
+    optimization_goal: str = "balanced"
+    cadence_days: int = 4
+    spend_blocks: tuple[SpendBlock, ...] = ()
 
     @property
     def start(self) -> date:
@@ -119,6 +142,18 @@ def _plan_from_dict(raw: dict | None) -> MarketingPlan | None:
         )
         for key, value in raw["channels"].items()
     }
+    spend_blocks = tuple(
+        SpendBlock(
+            start_date=str(block["start_date"]),
+            end_date=str(block["end_date"]),
+            daily_spend={
+                key: float(block["daily_spend"].get(key, 0.0))
+                for key in CHANNEL_ORDER
+            },
+            locked=bool(block.get("locked", False)),
+        )
+        for block in raw.get("spend_blocks", [])
+    )
     return MarketingPlan(
         plan_id=str(raw["plan_id"]),
         restaurant=str(raw["restaurant"]),
@@ -131,6 +166,9 @@ def _plan_from_dict(raw: dict | None) -> MarketingPlan | None:
         mmm_fit_version=str(raw["mmm_fit_version"]),
         updated_at=str(raw["updated_at"]),
         author=str(raw["author"]),
+        optimization_goal=str(raw.get("optimization_goal", "balanced")),
+        cadence_days=int(raw.get("cadence_days", 4)),
+        spend_blocks=spend_blocks,
     )
 
 
@@ -187,6 +225,10 @@ def validate_plan(
         raise ValueError("The MVP marketing plan is qualified only for Downtown")
     if plan.allocation_mode not in {"optimized", "manual"}:
         raise ValueError("allocation_mode must be optimized or manual")
+    if plan.optimization_goal not in {"sales", "balanced", "learning"}:
+        raise ValueError("optimization_goal must be sales, balanced, or learning")
+    if plan.cadence_days < 1:
+        raise ValueError("cadence_days must be positive")
     if plan.end < plan.start:
         raise ValueError("Marketing plan end date precedes its start date")
     if not allow_past and plan.start < (today or date.today()):
@@ -209,6 +251,28 @@ def validate_plan(
         channel.eligible for channel in plan.channels.values()
     ):
         raise ValueError("A positive budget requires an eligible channel")
+    if plan.spend_blocks:
+        expected_start = plan.start
+        block_totals = {key: 0.0 for key in CHANNEL_ORDER}
+        for block in plan.spend_blocks:
+            if block.start != expected_start:
+                raise ValueError("Spend blocks must be contiguous and ordered")
+            if block.end < block.start or block.end > plan.end:
+                raise ValueError("Spend block dates fall outside the plan")
+            if set(block.daily_spend) != set(CHANNEL_ORDER):
+                raise ValueError("Spend block channel set is incomplete")
+            if any(value < 0 for value in block.daily_spend.values()):
+                raise ValueError("Spend block amounts cannot be negative")
+            for key in CHANNEL_ORDER:
+                if not plan.channels[key].eligible and block.daily_spend[key] > 0.009:
+                    raise ValueError("Ineligible channels cannot receive block spend")
+                block_totals[key] += block.daily_spend[key] * block.duration_days
+            expected_start = block.end + timedelta(days=1)
+        if expected_start != plan.end + timedelta(days=1):
+            raise ValueError("Spend blocks must cover the full plan period")
+        for key in CHANNEL_ORDER:
+            if abs(block_totals[key] - plan.channels[key].amount) > 0.05:
+                raise ValueError("Spend block totals must match channel allocations")
 
 
 def saturation_thresholds(channel: str, duration_days: int) -> tuple[float, float]:
@@ -268,6 +332,78 @@ def optimize_allocations(
     return allocation
 
 
+def build_spend_blocks(
+    *,
+    start_date: date,
+    end_date: date,
+    channel_totals: dict[str, float],
+    cadence_days: int = 4,
+    optimization_goal: str = "balanced",
+) -> tuple[SpendBlock, ...]:
+    """Create one contiguous plan with staggered, budget-preserving spend blocks."""
+
+    if cadence_days < 1:
+        raise ValueError("cadence_days must be positive")
+    if optimization_goal not in {"sales", "balanced", "learning"}:
+        raise ValueError("Unknown optimization goal")
+    blocks: list[tuple[date, date]] = []
+    cursor = start_date
+    while cursor <= end_date:
+        block_end = min(end_date, cursor + timedelta(days=cadence_days - 1))
+        blocks.append((cursor, block_end))
+        cursor = block_end + timedelta(days=1)
+
+    variation = {"sales": 0.0, "balanced": 0.24, "learning": 0.42}[
+        optimization_goal
+    ]
+    patterns = {
+        "search": (0.78, 1.24, 0.88, 1.10),
+        "social": (1.18, 0.76, 1.16, 0.90),
+        "radio": (0.84, 1.20, 0.72, 1.24),
+    }
+    daily_by_channel: dict[str, list[float]] = {}
+    for channel in CHANNEL_ORDER:
+        factors = [
+            1.0 + variation * (patterns[channel][index % 4] - 1.0)
+            for index in range(len(blocks))
+        ]
+        weighted_days = sum(
+            factor * ((block_end - block_start).days + 1)
+            for factor, (block_start, block_end) in zip(factors, blocks)
+        )
+        base_daily = (
+            float(channel_totals.get(channel, 0.0)) / weighted_days
+            if weighted_days
+            else 0.0
+        )
+        daily_by_channel[channel] = [
+            round(base_daily * factor, 6) for factor in factors
+        ]
+
+    result = tuple(
+        SpendBlock(
+            start_date=block_start.isoformat(),
+            end_date=block_end.isoformat(),
+            daily_spend={
+                channel: daily_by_channel[channel][index]
+                for channel in CHANNEL_ORDER
+            },
+        )
+        for index, (block_start, block_end) in enumerate(blocks)
+    )
+    return result
+
+
+def block_channel_totals(
+    blocks: Iterable[SpendBlock],
+) -> dict[str, float]:
+    totals = {key: 0.0 for key in CHANNEL_ORDER}
+    for block in blocks:
+        for key in CHANNEL_ORDER:
+            totals[key] += float(block.daily_spend[key]) * block.duration_days
+    return {key: round(value, 2) for key, value in totals.items()}
+
+
 def make_plan(
     *,
     restaurant: str,
@@ -281,9 +417,16 @@ def make_plan(
     mmm_fit_version: str,
     author: str = "MVP manager",
     plan_id: str | None = None,
+    optimization_goal: str = "balanced",
+    cadence_days: int = 4,
+    spend_blocks: Iterable[SpendBlock] | None = None,
 ) -> MarketingPlan:
     duration = (end_date - start_date).days + 1
-    if allocation_mode == "optimized":
+    supplied_blocks = tuple(spend_blocks or ())
+    if supplied_blocks:
+        values = block_channel_totals(supplied_blocks)
+        total_budget = round(sum(values.values()), 2)
+    elif allocation_mode == "optimized":
         values = optimize_allocations(
             total_budget,
             [key for key, is_eligible in eligible.items() if is_eligible],
@@ -294,6 +437,13 @@ def make_plan(
             key: round(float((allocations or {}).get(key, 0.0)), 2)
             for key in CHANNEL_ORDER
         }
+    blocks = supplied_blocks or build_spend_blocks(
+        start_date=start_date,
+        end_date=end_date,
+        channel_totals=values,
+        cadence_days=cadence_days,
+        optimization_goal=optimization_goal,
+    )
     channels = {
         key: ChannelPlan(bool(eligible.get(key, False)), values[key])
         for key in CHANNEL_ORDER
@@ -310,6 +460,9 @@ def make_plan(
         mmm_fit_version=mmm_fit_version,
         updated_at=utc_now_iso(),
         author=author,
+        optimization_goal=optimization_goal,
+        cadence_days=cadence_days,
+        spend_blocks=blocks,
     )
     validate_plan(plan)
     return plan
@@ -352,12 +505,22 @@ def initialize_draft(
         published = state.published_plan
         duration = published.duration_days
         shifted_end = start_date + timedelta(days=duration - 1)
+        shifted_blocks = build_spend_blocks(
+            start_date=start_date,
+            end_date=shifted_end,
+            channel_totals={
+                key: published.channels[key].amount for key in CHANNEL_ORDER
+            },
+            cadence_days=published.cadence_days,
+            optimization_goal=published.optimization_goal,
+        )
         return replace(
             published,
             plan_id=str(uuid4()),
             start_date=start_date.isoformat(),
             end_date=shifted_end.isoformat(),
             updated_at=utc_now_iso(),
+            spend_blocks=shifted_blocks,
         )
     return zero_plan(
         restaurant=restaurant,
@@ -391,16 +554,22 @@ def _daily_channel_effect(
     dates: pd.DatetimeIndex,
 ) -> list[float]:
     spec = CHANNEL_SPECS[channel]
-    daily_spend = amount / max(plan.duration_days, 1)
-    direct = (
-        daily_spend
-        * spec.starting_roas
-        / (1.0 + daily_spend / spec.daily_saturation)
-    )
+    default_daily_spend = amount / max(plan.duration_days, 1)
+    scheduled_spend = {
+        day: block.daily_spend[channel]
+        for block in plan.spend_blocks
+        for day in pd.date_range(block.start, block.end, freq="D").date
+    }
     stock = 0.0
     effects: list[float] = []
     for timestamp in dates:
         active = plan.start <= timestamp.date() <= plan.end
+        daily_spend = scheduled_spend.get(timestamp.date(), default_daily_spend)
+        direct = (
+            daily_spend
+            * spec.starting_roas
+            / (1.0 + daily_spend / spec.daily_saturation)
+        )
         stock = direct + spec.adstock_decay * stock if active else spec.adstock_decay * stock
         effects.append((1.0 - spec.adstock_decay) * stock)
     return effects
@@ -501,6 +670,9 @@ def plans_equivalent(left: MarketingPlan, right: MarketingPlan) -> bool:
         and left.end_date == right.end_date
         and abs(left.total_budget - right.total_budget) < 0.01
         and left.allocation_mode == right.allocation_mode
+        and left.optimization_goal == right.optimization_goal
+        and left.cadence_days == right.cadence_days
+        and left.spend_blocks == right.spend_blocks
         and all(
             left.channels[key] == right.channels[key] for key in CHANNEL_ORDER
         )

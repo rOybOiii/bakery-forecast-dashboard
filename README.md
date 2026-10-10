@@ -38,3 +38,8 @@ It keeps one implemented marketing plan and at most one saved draft in
 session state, while the deterministic preview scorer stands in for the future
 frozen-MMM scenario adapter. The other restaurant pages remain on the earlier
 dashboard design during this qualification.
+
+Plans can be optimized or edited manually as one sequence of learning-aware
+spend blocks, using a four-day cadence by default. Each block carries daily
+channel spend into the adstock and saturation preview, and managers can use an
+explicit override when a block needs to exceed its recommended channel range.

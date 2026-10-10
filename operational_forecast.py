@@ -24,6 +24,8 @@ from marketing_planning import (
     MarketingPlan,
     MarketingPlanState,
     ScenarioResult,
+    SpendBlock,
+    build_spend_blocks,
     implement_plan,
     initialize_draft,
     load_plan_state,
@@ -99,30 +101,51 @@ def _apply_pending_widget_clear() -> None:
         "marketing_end_date",
         "marketing_total_budget",
         "marketing_allocation_mode",
+        "marketing_optimization_goal",
+        "marketing_cadence_days",
+        "marketing_selected_block",
+        "marketing_selected_block_index",
     )
     for key in widget_keys:
         st.session_state.pop(key, None)
     for channel in CHANNEL_ORDER:
         st.session_state.pop(f"marketing_eligible_{channel}", None)
         st.session_state.pop(f"marketing_manual_{channel}", None)
+    for key in list(st.session_state):
+        if key.startswith("marketing_block_") or key.startswith(
+            "marketing_allow_higher_"
+        ):
+            st.session_state.pop(key, None)
 
 
 def _allocation_mode_changed() -> None:
     """Carry the current plan smoothly between optimized and manual editing."""
 
     mode = st.session_state.get("marketing_allocation_mode")
-    if mode == "Manual override":
-        # Seed a newly opened manual mix from the latest optimized working plan.
-        for channel in CHANNEL_ORDER:
-            st.session_state.pop(f"marketing_manual_{channel}", None)
+    if mode == "Manual schedule":
+        # Seed manual block controls from the latest optimized working schedule.
+        for key in list(st.session_state):
+            if key.startswith("marketing_block_") or key.startswith(
+                "marketing_allow_higher_"
+            ):
+                st.session_state.pop(key, None)
         return
-    if mode == "Optimize mix":
-        # The optimizer starts from the total the manager just assembled.
-        manual_total = sum(
-            float(st.session_state.get(f"marketing_manual_{channel}", 0.0))
-            for channel in CHANNEL_ORDER
+    if mode == "Optimize schedule":
+        # The optimizer starts from the total of the latest manual working plan.
+        working = st.session_state.get("marketing_working_plan")
+        manual_total = float(working.total_budget) if working is not None else 0.0
+        st.session_state["marketing_total_budget"] = int(
+            round(manual_total / 25.0) * 25
         )
-        st.session_state["marketing_total_budget"] = int(round(manual_total / 25.0) * 25)
+
+
+def _switch_to_manual_schedule() -> None:
+    st.session_state["marketing_allocation_mode"] = "Manual schedule"
+    for key in list(st.session_state):
+        if key.startswith("marketing_block_") or key.startswith(
+            "marketing_allow_higher_"
+        ):
+            st.session_state.pop(key, None)
 
 
 def _begin_working_draft(state: MarketingPlanState, baseline: pd.DataFrame) -> None:
@@ -426,15 +449,52 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     elif period == "14 days":
         end = start + timedelta(days=13)
     duration = (end - start).days + 1
+    st.caption(
+        f"{start:%b %-d}–{end:%b %-d} · spending changes forecast values, not the 14-day horizon"
+    )
     default_mode_label = (
-        "Optimize mix" if plan.allocation_mode == "optimized" else "Manual override"
+        "Optimize schedule" if plan.allocation_mode == "optimized" else "Manual schedule"
     )
-    active_mode_label = st.session_state.get(
-        "marketing_allocation_mode", default_mode_label
+    mode_label = st.segmented_control(
+        "Plan construction",
+        ["Optimize schedule", "Manual schedule"],
+        default=default_mode_label,
+        key="marketing_allocation_mode",
+        on_change=_allocation_mode_changed,
+        width="stretch",
+    ) or default_mode_label
+    mode = "optimized" if mode_label == "Optimize schedule" else "manual"
+
+    goal_labels = {
+        "Sales": "sales",
+        "Balanced": "balanced",
+        "Learn faster": "learning",
+    }
+    reverse_goal_labels = {value: key for key, value in goal_labels.items()}
+    if mode == "optimized":
+        goal_label = st.segmented_control(
+            "Optimization goal",
+            list(goal_labels),
+            default=reverse_goal_labels.get(plan.optimization_goal, "Balanced"),
+            key="marketing_optimization_goal",
+            width="stretch",
+        ) or "Balanced"
+        optimization_goal = goal_labels[goal_label]
+    else:
+        optimization_goal = plan.optimization_goal
+
+    cadence = int(
+        st.number_input(
+            "Days per learning block",
+            min_value=2,
+            max_value=7,
+            value=int(plan.cadence_days),
+            step=1,
+            key="marketing_cadence_days",
+        )
     )
-    active_mode = "optimized" if active_mode_label == "Optimize mix" else "manual"
     budget_slot = st.empty()
-    if active_mode == "optimized":
+    if mode == "optimized":
         budget_value = {}
         if "marketing_total_budget" not in st.session_state:
             budget_value["value"] = int(round(plan.total_budget / 25.0) * 25)
@@ -448,17 +508,8 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             **budget_value,
         )
     else:
-        total_budget = sum(
-            float(
-                st.session_state.get(
-                    f"marketing_manual_{key}", plan.channels[key].amount
-                )
-            )
-            for key in CHANNEL_ORDER
-        )
-    st.caption(
-        f"{start:%b %-d}–{end:%b %-d} · spending changes forecast values, not the 14-day horizon"
-    )
+        total_budget = float(plan.total_budget)
+
     st.markdown("**Eligible channels**")
     eligibility_columns = st.columns(3)
     eligible: dict[str, bool] = {}
@@ -468,21 +519,12 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             value=plan.channels[key].eligible,
             key=f"marketing_eligible_{key}",
         )
-    mode_label = st.segmented_control(
-        "Allocation approach",
-        ["Optimize mix", "Manual override"],
-        default=default_mode_label,
-        key="marketing_allocation_mode",
-        on_change=_allocation_mode_changed,
-        width="stretch",
-    ) or "Optimize mix"
-    mode = "optimized" if mode_label == "Optimize mix" else "manual"
+
     if mode == "optimized":
         if total_budget > 0 and not any(eligible.values()):
             st.error("Turn on at least one channel before allocating a positive budget.")
             return None
-        allocations = None
-        preview = make_plan(
+        candidate = make_plan(
             restaurant=RESTAURANT,
             start_date=start,
             end_date=end,
@@ -493,67 +535,236 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
             baseline_vintage=BASELINE_VINTAGE,
             mmm_fit_version=MMM_FIT_VERSION,
             plan_id=plan.plan_id,
+            optimization_goal=optimization_goal,
+            cadence_days=cadence,
         )
-        values = {key: preview.channels[key].amount for key in CHANNEL_ORDER}
+        blocks = candidate.spend_blocks
     else:
-        values = {
-            key: float(plan.channels[key].amount) if eligible[key] else 0.0
+        same_shape = (
+            bool(plan.spend_blocks)
+            and plan.start == start
+            and plan.end == end
+            and plan.cadence_days == cadence
+        )
+        blocks = (
+            plan.spend_blocks
+            if same_shape
+            else build_spend_blocks(
+                start_date=start,
+                end_date=end,
+                channel_totals={
+                    key: plan.channels[key].amount if eligible[key] else 0.0
+                    for key in CHANNEL_ORDER
+                },
+                cadence_days=cadence,
+                optimization_goal=optimization_goal,
+            )
+        )
+
+        # Reflect any saved widget edits in the schedule summary before rendering it.
+        # Streamlit reruns top-to-bottom, so the preview rows must read the current
+        # widget state rather than the original draft blocks.
+        current_blocks: list[SpendBlock] = []
+        for index, block in enumerate(blocks):
+            block_allows_higher = bool(
+                st.session_state.get(f"marketing_allow_higher_{index}", False)
+            )
+            daily_spend: dict[str, float] = {}
+            for key in CHANNEL_ORDER:
+                slider_key = f"marketing_block_{index}_{key}"
+                extended_key = f"{slider_key}_extended"
+                if not eligible[key]:
+                    value = 0.0
+                elif block_allows_higher and extended_key in st.session_state:
+                    value = float(st.session_state[extended_key])
+                elif slider_key in st.session_state:
+                    value = float(st.session_state[slider_key])
+                else:
+                    value = float(block.daily_spend[key])
+                daily_spend[key] = value
+            current_blocks.append(
+                SpendBlock(
+                    start_date=block.start_date,
+                    end_date=block.end_date,
+                    daily_spend=daily_spend,
+                    locked=block.locked,
+                )
+            )
+        blocks = tuple(current_blocks)
+
+    def block_label(index: int) -> str:
+        block = blocks[index]
+        if mode == "manual":
+            return f"{block.start:%b %-d}–{block.end:%b %-d}"
+        daily_total = sum(block.daily_spend.values())
+        return (
+            f"{block.start:%b %-d}–{block.end:%b %-d} · "
+            f"{_money(daily_total)}/day"
+        )
+
+    if mode == "optimized":
+        block_captions = [
+            " · ".join(
+                f"{CHANNEL_SPECS[key].label} {_money(block.daily_spend[key])}"
+                for key in CHANNEL_ORDER
+            )
+            for block in blocks
+        ]
+    else:
+        block_captions = ["Select this block to edit its daily channel mix"] * len(
+            blocks
+        )
+    st.markdown("**Spending schedule**")
+    selected_block = st.radio(
+        "Spending schedule",
+        options=list(range(len(blocks))),
+        format_func=block_label,
+        captions=block_captions,
+        key="marketing_selected_block_index",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    selected_index = int(selected_block)
+
+    if mode == "optimized":
+        selected = blocks[selected_index]
+        st.caption(
+            f"Selected block: {selected.duration_days} days. The optimizer staggers channel changes while preserving the total budget."
+        )
+        st.button(
+            "Edit and lock selected block",
+            use_container_width=True,
+            on_click=_switch_to_manual_schedule,
+        )
+        return candidate
+
+    selected = blocks[selected_index]
+    st.markdown(
+        f"**Edit {selected.start:%b %-d}–{selected.end:%b %-d}** · daily spend"
+    )
+    allow_key = f"marketing_allow_higher_{selected_index}"
+    normal_limits = {
+        key: int(
+            round(CHANNEL_SPECS[key].daily_saturation * 1.18 * 1.20 / 5.0)
+            * 5
+        )
+        for key in CHANNEL_ORDER
+    }
+    allow_defaults = {}
+    if allow_key not in st.session_state:
+        allow_defaults["value"] = any(
+            selected.daily_spend[key] > normal_limits[key]
             for key in CHANNEL_ORDER
-        }
-    st.markdown("**Proposed channel mix**")
+        )
+    allow_higher = st.toggle(
+        "Allow higher spending",
+        key=allow_key,
+        help="Replaces the normal decision-range sliders with direct dollar entry for this block.",
+        **allow_defaults,
+    )
+
     for key in CHANNEL_ORDER:
-        label = CHANNEL_SPECS[key].label
-        maximum = max(total_budget, 100) if mode == "optimized" else 15_000
-        if mode == "optimized":
-            slider_key = f"marketing_optimized_{key}"
-            amount = st.slider(
-                label if eligible[key] else f"{label} · off",
-                min_value=0,
-                max_value=maximum,
-                value=int(round(values[key])),
-                step=25,
-                format="$%d",
-                disabled=True,
-                key=slider_key,
+        base_value = float(selected.daily_spend[key]) if eligible[key] else 0.0
+        slider_key = f"marketing_block_{selected_index}_{key}"
+        extended_key = f"marketing_block_{selected_index}_{key}_extended"
+        label = f"{CHANNEL_SPECS[key].label} per day"
+        if allow_higher:
+            extended_defaults = {}
+            if extended_key not in st.session_state:
+                extended_defaults["value"] = float(
+                    st.session_state.get(slider_key, base_value)
+                )
+            st.number_input(
+                label,
+                min_value=0.0,
+                step=5.0,
+                format="%.0f",
+                disabled=not eligible[key],
+                key=extended_key,
+                **extended_defaults,
             )
         else:
-            slider_key = f"marketing_manual_{key}"
-            slider_value = {}
-            if slider_key in st.session_state:
-                st.session_state[slider_key] = min(
-                    int(st.session_state[slider_key]), maximum
+            slider_defaults = {}
+            if slider_key not in st.session_state:
+                slider_defaults["value"] = min(
+                    int(round(base_value / 5.0) * 5), normal_limits[key]
                 )
-                if not eligible[key]:
-                    st.session_state[slider_key] = 0
-            else:
-                slider_value["value"] = int(round(values[key]))
-            amount = st.slider(
-                label if eligible[key] else f"{label} · off",
+            st.slider(
+                label,
                 min_value=0,
-                max_value=maximum,
-                step=25,
+                max_value=normal_limits[key],
+                step=5,
                 format="$%d",
                 disabled=not eligible[key],
                 key=slider_key,
-                **slider_value,
+                **slider_defaults,
             )
-            values[key] = float(amount) if eligible[key] else 0.0
-        _saturation_track(key, duration, maximum, slider_key)
-    if mode == "manual":
-        total_budget = sum(values.values())
-        budget_slot.metric("Total planned spend", _money(total_budget))
-        allocations = values
+            _saturation_track(
+                key,
+                1,
+                normal_limits[key],
+                slider_key,
+            )
+    if allow_higher:
+        st.warning(
+            "Direct entry can exceed the recommended range. Lift and ROAS still update, and saturated spending remains visible in review."
+        )
+
+    edited_blocks: list[SpendBlock] = []
+    for index, block in enumerate(blocks):
+        daily_spend: dict[str, float] = {}
+        block_allows_higher = bool(
+            st.session_state.get(f"marketing_allow_higher_{index}", False)
+        )
+        for key in CHANNEL_ORDER:
+            if not eligible[key]:
+                value = 0.0
+            elif block_allows_higher and f"marketing_block_{index}_{key}_extended" in st.session_state:
+                value = float(
+                    st.session_state[f"marketing_block_{index}_{key}_extended"]
+                )
+            elif f"marketing_block_{index}_{key}" in st.session_state:
+                value = float(st.session_state[f"marketing_block_{index}_{key}"])
+            else:
+                value = float(block.daily_spend[key])
+            daily_spend[key] = value
+        edited_blocks.append(
+            SpendBlock(
+                start_date=block.start_date,
+                end_date=block.end_date,
+                daily_spend=daily_spend,
+                locked=index == selected_index or block.locked,
+            )
+        )
+    total_budget = sum(
+        sum(block.daily_spend.values()) * block.duration_days
+        for block in edited_blocks
+    )
+    edited_selected = edited_blocks[selected_index]
+    selected_daily_total = sum(edited_selected.daily_spend.values())
+    selected_mix = " · ".join(
+        f"{CHANNEL_SPECS[key].label} {_money(edited_selected.daily_spend[key])}"
+        for key in CHANNEL_ORDER
+    )
+    selected_summary = (
+        f"Selected block total: {_money(selected_daily_total)}/day · {selected_mix}"
+    )
+    st.caption(selected_summary.replace("$", r"\$"))
+    budget_slot.metric("Total planned spend", _money(total_budget))
     return make_plan(
         restaurant=RESTAURANT,
         start_date=start,
         end_date=end,
         total_budget=float(total_budget),
         eligible=eligible,
-        allocation_mode=mode,
-        allocations=allocations,
+        allocation_mode="manual",
+        allocations=None,
         baseline_vintage=BASELINE_VINTAGE,
         mmm_fit_version=MMM_FIT_VERSION,
         plan_id=plan.plan_id,
+        optimization_goal=optimization_goal,
+        cadence_days=cadence,
+        spend_blocks=edited_blocks,
     )
 
 
@@ -577,6 +788,12 @@ def _marketing_drawer(baseline: pd.DataFrame) -> None:
         impact_columns = st.columns(2)
         impact_columns[0].metric("Expected lift", _money(result.summary.marketing_lift, signed=True))
         impact_columns[1].metric("Average ROAS", f"{result.summary.average_roas:.2f}×")
+        learning_label = {
+            "sales": "Light",
+            "balanced": "Good",
+            "learning": "Strong",
+        }[candidate.optimization_goal]
+        st.caption(f"Learning quality: **{learning_label}**")
         if result.summary.carryover_beyond_horizon > 1:
             st.caption(
                 f"Estimated carryover after the visible horizon: "
