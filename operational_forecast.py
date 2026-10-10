@@ -449,25 +449,6 @@ def _saturation_track(
     )
 
 
-def _extended_slider_amount(value: float, maximum: int) -> None:
-    marker_pct = min(100.0, max(0.0, float(value) / maximum * 100.0))
-    if marker_pct <= 8:
-        transform = "translateX(0)"
-    elif marker_pct >= 92:
-        transform = "translateX(-100%)"
-    else:
-        transform = "translateX(-50%)"
-    st.html(
-        f"""
-        <div class="extended-slider-amount">
-          <span style="left:{marker_pct:.1f}%;transform:{transform};">
-            {_money(value)}
-          </span>
-        </div>
-        """
-    )
-
-
 def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
     period_default = (
         "7 days" if plan.duration_days == 7 else "14 days" if plan.duration_days == 14 else "Custom"
@@ -787,7 +768,6 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     **extended_defaults,
                 )
                 with range_column:
-                    _extended_slider_amount(float(direct_value), normal_limits[key])
                     st.slider(
                         f"{label} decision range",
                         min_value=0,
@@ -814,7 +794,7 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                     slider_defaults["value"] = min(
                         int(round(base_value / 5.0) * 5), normal_limits[key]
                     )
-                slider_value = range_column.slider(
+                range_column.slider(
                     label,
                     min_value=0,
                     max_value=normal_limits[key],
@@ -832,10 +812,6 @@ def _candidate_from_controls(plan: MarketingPlan) -> MarketingPlan | None:
                         normal_limits[key],
                         slider_key,
                     )
-                value_column.markdown(
-                    f'<div class="channel-spend-value">{_money(float(slider_value))}<span>/day</span></div>',
-                    unsafe_allow_html=True,
-                )
         if allow_higher:
             st.caption(
                 "Dollar entry may exceed the displayed decision range. The marker pins at the red edge once spending is materially saturated."
@@ -1160,13 +1136,6 @@ def render_downtown_dashboard(bundle) -> None:
         .channel-spend-value span {
             color: var(--muted); font-size: .67rem; font-weight: 500;
             margin-left: .12rem;
-        }
-        .extended-slider-amount {
-            height: .95rem; position: relative; color: #2f6b55;
-            font-size: .72rem; font-weight: 650; line-height: .9rem;
-        }
-        .extended-slider-amount span {
-            position: absolute; top: 0; white-space: nowrap;
         }
         .manual-plan-total {
             background: #e8ebe5; border: 1px solid #d8ddd6; border-radius: 12px;
