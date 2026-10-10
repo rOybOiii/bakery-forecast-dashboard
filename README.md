@@ -29,3 +29,12 @@ the synthetic bundle committed under `data/dashboard_bundle_v1/`.
 
 Only synthetic data is included. Do not add real client sales or upstream
 posterior artifacts to a public repository.
+
+## Downtown marketing-plan MVP
+
+The Downtown restaurant view is the first operational-forecast vertical slice.
+It keeps one implemented marketing plan and at most one saved draft in
+`data/marketing_plan_state_v1.json`. Unsaved drawer edits remain in Streamlit
+session state, while the deterministic preview scorer stands in for the future
+frozen-MMM scenario adapter. The other restaurant pages remain on the earlier
+dashboard design during this qualification.

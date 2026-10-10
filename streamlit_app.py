@@ -26,6 +26,7 @@ from dashboard_data import (
     restaurant_summary,
 )
 from history_window_control import history_window_control
+from operational_forecast import render_downtown_dashboard
 
 
 ROOT = Path(__file__).resolve().parent
@@ -244,23 +245,44 @@ mobile_request = is_mobile_request()
 
 with st.sidebar:
     st.markdown("### Planning view")
+    if "active_restaurant" not in st.session_state:
+        st.session_state.active_restaurant = "all"
+    restaurant_nonce = int(st.session_state.get("restaurant_picker_nonce", 0))
     selected_label = st.selectbox(
         "Restaurant",
         options=list(RESTAURANT_LABELS.values()),
-        index=0,
+        index=list(RESTAURANT_LABELS).index(st.session_state.active_restaurant),
+        key=f"restaurant_picker_{restaurant_nonce}",
     )
-    restaurant = next(
+    requested_restaurant = next(
         key for key, label in RESTAURANT_LABELS.items() if label == selected_label
     )
+    if requested_restaurant != st.session_state.active_restaurant:
+        if (
+            st.session_state.active_restaurant == "downtown"
+            and bool(st.session_state.get("marketing_dirty"))
+        ):
+            st.session_state.downtown_pending_nav = {
+                "kind": "restaurant",
+                "value": requested_restaurant,
+            }
+        else:
+            st.session_state.active_restaurant = requested_restaurant
+    restaurant = st.session_state.active_restaurant
     st.caption(
         f"Forecast through {pd.Timestamp(bundle.manifest['shared_forecast_end']):%B %-d, %Y}"
     )
-    st.divider()
-    st.markdown("**About this preview**")
-    st.caption(
-        "Synthetic restaurant data is shown here. Forecasting and event analysis "
-        "were completed before the dashboard was published."
-    )
+    if restaurant != "downtown":
+        st.divider()
+        st.markdown("**About this preview**")
+        st.caption(
+            "Synthetic restaurant data is shown here. Forecasting and event analysis "
+            "were completed before the dashboard was published."
+        )
+
+if restaurant == "downtown":
+    render_downtown_dashboard(bundle)
+    st.stop()
 
 header, status = st.columns([4, 1])
 with header:
