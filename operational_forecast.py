@@ -1115,17 +1115,8 @@ def _render_forecast(bundle) -> None:
             """,
             unsafe_allow_html=True,
         )
-        banner_columns = st.columns([1, 1, 2])
-        if banner_columns[0].button("Continue editing", use_container_width=True):
+        if st.button("Continue editing", type="primary"):
             st.session_state.marketing_drawer_open = True
-            st.rerun()
-        if banner_columns[1].button("Return to implemented", use_container_width=True):
-            if dirty:
-                st.session_state.marketing_exit_requested = True
-                st.session_state.marketing_drawer_open = True
-            else:
-                _clear_working_draft()
-                st.session_state.marketing_draft_mode = False
             st.rerun()
 
     if draft is None:
@@ -1169,10 +1160,15 @@ def _render_forecast(bundle) -> None:
         with st.container(border=True):
             st.markdown("**Marketing plan**")
             if state.published_plan is None:
-                st.caption("No marketing plan is implemented. Start at $0 and let the optimizer propose a mix.")
+                st.caption(
+                    r"No marketing plan is implemented. Start at \$0 and let the optimizer propose a mix."
+                )
             else:
                 st.caption(
-                    f"{_money(published.summary.spend)} is implemented across eligible channels; expected visible lift is {_money(published.summary.marketing_lift)}."
+                    (
+                        f"{_money(published.summary.spend)} is implemented across eligible channels; "
+                        f"expected visible lift is {_money(published.summary.marketing_lift)}."
+                    ).replace("$", r"\$")
                 )
             if st.button("Review marketing", type="primary", key="review_marketing"):
                 _begin_working_draft(state, baseline)
