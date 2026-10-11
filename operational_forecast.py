@@ -112,6 +112,8 @@ def _clear_event_working_draft() -> None:
         "event_dirty",
         "event_drawer_open",
         "event_exit_requested",
+        "event_editing_placement_id",
+        "event_pending_edit_placement_id",
     ):
         st.session_state.pop(key, None)
 
@@ -150,6 +152,52 @@ def _has_unsaved_changes() -> bool:
     return bool(st.session_state.get("marketing_dirty")) or bool(
         st.session_state.get("event_dirty")
     )
+
+
+def _event_template_changed() -> None:
+    """A direct catalog choice starts a new placement instead of editing one."""
+
+    st.session_state.pop("event_editing_placement_id", None)
+
+
+def _apply_pending_event_edit(
+    placements: tuple[EventPlacement, ...],
+) -> EventPlacement | None:
+    """Load a selected timeline card into controls before widgets render."""
+
+    pending_id = st.session_state.pop("event_pending_edit_placement_id", None)
+    if pending_id is None:
+        editing_id = st.session_state.get("event_editing_placement_id")
+        return next(
+            (item for item in placements if item.placement_id == editing_id),
+            None,
+        )
+    placement = next(
+        (item for item in placements if item.placement_id == pending_id),
+        None,
+    )
+    if placement is None:
+        st.session_state.pop("event_editing_placement_id", None)
+        return None
+
+    template_id = placement.template_id
+    duration = len(placement.daily_effect)
+    st.session_state.event_editing_placement_id = placement.placement_id
+    st.session_state.event_catalog_view = "Browse all"
+    st.session_state.event_catalog_search = ""
+    st.session_state.event_category_filter = None
+    st.session_state.event_tag_filter = []
+    st.session_state.event_template_id = template_id
+    st.session_state[f"event_occurrence_{template_id}"] = "One time"
+    st.session_state[f"event_start_{template_id}"] = placement.start_date
+    st.session_state[f"event_duration_{template_id}"] = duration
+    st.session_state[f"event_magnitude_{template_id}"] = 100
+    st.session_state[f"event_edit_shape_{template_id}"] = True
+    for day_index, value in enumerate(placement.daily_effect, start=1):
+        st.session_state[
+            f"event_day_{template_id}_{duration}_{day_index}"
+        ] = int(round(100 * value))
+    return placement
 
 
 def _apply_pending_widget_clear() -> None:
@@ -1259,98 +1307,133 @@ def _event_dates(placement: EventPlacement) -> set[date]:
 )
 def _event_drawer(baseline: pd.DataFrame) -> None:
     working = _working_event_placements()
+    editing_placement = _apply_pending_event_edit(working)
     horizon_start = baseline["target_date"].min().date()
     horizon_end = baseline["target_date"].max().date()
+    st.markdown(
+        '<span class="event-drawer-anchor"></span>',
+        unsafe_allow_html=True,
+    )
 
-    st.caption(
-        "Choose a known event, place it in the forecast, and adjust only this "
-        "scenario copy. Historical event records remain unchanged."
-    )
-    view = st.segmented_control(
-        "Catalog view",
-        ["Suggested", "Browse all"],
-        default="Suggested",
-        key="event_catalog_view",
-        width="stretch",
-    ) or "Suggested"
-    search = st.text_input(
-        "Search events",
-        placeholder="Search names, categories, or tags",
-        key="event_catalog_search",
-    )
-    category: str | None = None
-    tags: list[str] = []
-    if view == "Browse all":
-        categories = sorted({template.category for template in EVENT_CATALOG})
-        category = st.pills(
-            "Category",
-            categories,
-            selection_mode="single",
-            key="event_category_filter",
+    if editing_placement is None:
+        st.caption(
+            "Choose a known event, place it in the forecast, and adjust only this "
+            "scenario copy. Historical event records remain unchanged."
         )
-        popular_tags = [
-            "annual",
-            "recurring",
-            "downtown",
-            "one-day",
-            "two-day",
-            "three-day",
-            "sharp-peak",
-            "slow-decay",
-            "negative-tail",
-        ]
-        tags = st.pills(
-            "Tags",
-            popular_tags,
-            selection_mode="multi",
-            key="event_tag_filter",
-        ) or []
+        view_defaults = {}
+        if "event_catalog_view" not in st.session_state:
+            view_defaults["default"] = "Suggested"
+        view = st.segmented_control(
+            "Catalog view",
+            ["Suggested", "Browse all"],
+            key="event_catalog_view",
+            width="stretch",
+            **view_defaults,
+        ) or "Suggested"
+        search = st.text_input(
+            "Search events",
+            placeholder="Search names, categories, or tags",
+            key="event_catalog_search",
+        )
+        category: str | None = None
+        tags: list[str] = []
+        if view == "Browse all":
+            categories = sorted({template.category for template in EVENT_CATALOG})
+            category = st.pills(
+                "Category",
+                categories,
+                selection_mode="single",
+                key="event_category_filter",
+            )
+            popular_tags = [
+                "annual",
+                "recurring",
+                "downtown",
+                "one-day",
+                "two-day",
+                "three-day",
+                "sharp-peak",
+                "slow-decay",
+                "negative-tail",
+            ]
+            tags = st.pills(
+                "Tags",
+                popular_tags,
+                selection_mode="multi",
+                key="event_tag_filter",
+            ) or []
 
-    matches = _event_catalog_matches(
-        search=search,
-        category=category,
-        tags=list(tags),
-        suggested_only=view == "Suggested",
-    )
-    if not matches:
-        st.info("No catalog events match those filters.")
-        st.stop()
-    option_ids = [template.template_id for template in matches]
-    if st.session_state.get("event_template_id") not in option_ids:
-        st.session_state.event_template_id = option_ids[0]
-    selected_id = st.radio(
-        "Event catalog",
-        option_ids,
-        format_func=lambda template_id: template_by_id(template_id).name,
-        captions=[
-            f"{template.timing_hint} · {template.evidence} · "
-            f"{', '.join(template.tags[:3])}"
-            for template in matches
-        ],
-        key="event_template_id",
-        label_visibility="collapsed",
-    )
+        matches = _event_catalog_matches(
+            search=search,
+            category=category,
+            tags=list(tags),
+            suggested_only=view == "Suggested",
+        )
+        if not matches:
+            st.info("No catalog events match those filters.")
+            st.stop()
+        option_ids = [template.template_id for template in matches]
+        if st.session_state.get("event_template_id") not in option_ids:
+            st.session_state.event_template_id = option_ids[0]
+        selected_id = st.radio(
+            "Event catalog",
+            option_ids,
+            format_func=lambda template_id: template_by_id(template_id).name,
+            captions=[
+                f"{template.timing_hint} · {template.evidence} · "
+                f"{', '.join(template.tags[:3])}"
+                for template in matches
+            ],
+            key="event_template_id",
+            label_visibility="collapsed",
+            on_change=_event_template_changed,
+        )
+    else:
+        selected_id = editing_placement.template_id
+        st.caption(
+            "Editing a placed forecast occurrence. Historical event records remain unchanged."
+        )
+        if st.button("Choose another event", use_container_width=True):
+            st.session_state.pop("event_editing_placement_id", None)
+            st.session_state.event_catalog_view = "Suggested"
+            st.rerun()
     template = template_by_id(selected_id)
     st.markdown(
         f'<div class="event-template-summary"><strong>{template.name}</strong>'
         f'<span>{template.category} · {template.evidence}</span></div>',
         unsafe_allow_html=True,
     )
+    if editing_placement is not None:
+        st.caption(
+            f"Editing the placed occurrence from "
+            f"{editing_placement.start_date:%b %-d}–"
+            f"{editing_placement.end_date:%b %-d}. Changes below update this event only."
+        )
 
+    occurrence_key = f"event_occurrence_{template.template_id}"
+    occurrence_defaults = {}
+    if occurrence_key not in st.session_state:
+        occurrence_defaults["default"] = (
+            "Recurring" if "recurring" in template.tags else "One time"
+        )
     occurrence = st.segmented_control(
         "Occurrence",
         ["One time", "Recurring"],
-        default="Recurring" if "recurring" in template.tags else "One time",
-        key=f"event_occurrence_{template.template_id}",
+        key=occurrence_key,
         width="stretch",
+        **occurrence_defaults,
     ) or "One time"
     timing_columns = st.columns(2)
+    start_key = f"event_start_{template.template_id}"
+    start_defaults = {}
+    if start_key not in st.session_state:
+        start_defaults["value"] = horizon_start
     start = timing_columns[0].date_input(
         "Start date",
-        value=horizon_start,
         min_value=max(date.today(), horizon_start),
         max_value=horizon_end,
-        key=f"event_start_{template.template_id}",
+        key=start_key,
+        **start_defaults,
     )
     maximum_duration = min(7, (horizon_end - start).days + 1)
     duration_key = f"event_duration_{template.template_id}"
@@ -1392,28 +1475,36 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
         )
 
     is_closure = template.template_id == "closed-day"
+    magnitude_key = f"event_magnitude_{template.template_id}"
+    magnitude_defaults = {}
+    if magnitude_key not in st.session_state:
+        magnitude_defaults["value"] = 100
     magnitude = int(
         st.slider(
             "Overall magnitude",
             min_value=50,
             max_value=160,
-            value=100,
             step=5,
             format="%d%%",
             disabled=is_closure,
-            key=f"event_magnitude_{template.template_id}",
+            key=magnitude_key,
+            **magnitude_defaults,
         )
     )
     suggested_effect = tuple(
         value * magnitude / 100.0
         for value in resample_effect(template.daily_effect, duration)
     )
+    edit_shape_key = f"event_edit_shape_{template.template_id}"
+    edit_shape_defaults = {}
+    if edit_shape_key not in st.session_state:
+        edit_shape_defaults["value"] = False
     edit_daily = st.toggle(
         "Edit daily shape",
-        value=False,
         disabled=is_closure,
         help="Move individual event days without changing the historical event.",
-        key=f"event_edit_shape_{template.template_id}",
+        key=edit_shape_key,
+        **edit_shape_defaults,
     )
     custom_percent: tuple[float, ...] | None = None
     preview_effect = suggested_effect
@@ -1421,18 +1512,29 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
         edited: list[float] = []
         st.caption("Adjust each day. Values outside the historical range remain scenarios, not new evidence.")
         for day_index, value in enumerate(suggested_effect, start=1):
+            day_key = (
+                f"event_day_{template.template_id}_{duration}_{day_index}"
+            )
+            day_defaults = {}
+            if day_key not in st.session_state:
+                unscaled = resample_effect(template.daily_effect, duration)[
+                    day_index - 1
+                ]
+                day_defaults["value"] = int(round(100 * unscaled))
             day_value = st.slider(
                 f"Day {day_index}",
                 min_value=-30,
                 max_value=60,
-                value=int(round(100 * value)),
                 step=1,
                 format="%d%%",
-                key=f"event_day_{template.template_id}_{duration}_{day_index}",
+                key=day_key,
+                **day_defaults,
             )
             edited.append(float(day_value))
-        custom_percent = tuple(edited)
-        preview_effect = tuple(value / 100.0 for value in edited)
+        preview_effect = tuple(
+            value * magnitude / 10_000.0 for value in edited
+        )
+        custom_percent = tuple(100 * value for value in preview_effect)
 
     st.altair_chart(
         _event_shape_chart(template.template_id, preview_effect),
@@ -1458,8 +1560,13 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
     else:
         st.success(f"Suggested scenario remains within prior evidence · {peak:+d}% peak")
 
+    action_label = (
+        "Update selected event"
+        if editing_placement is not None
+        else "Add to forecast timeline"
+    )
     if st.button(
-        "Add to forecast timeline",
+        action_label,
         type="primary",
         use_container_width=True,
     ):
@@ -1469,7 +1576,7 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
                 horizon_end=horizon_end,
                 every_weeks=every_weeks,
             )
-            if occurrence == "Recurring"
+            if occurrence == "Recurring" and editing_placement is None
             else (start,)
         )
         additions = tuple(
@@ -1479,16 +1586,45 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
                 duration_days=duration,
                 magnitude_percent=magnitude,
                 custom_daily_percent=custom_percent,
-                occurrence=occurrence,
+                occurrence=(
+                    editing_placement.occurrence
+                    if editing_placement is not None
+                    else occurrence
+                ),
+                placement_id=(
+                    editing_placement.placement_id
+                    if editing_placement is not None
+                    else None
+                ),
             )
             for event_start in starts
         )
-        existing_days = set().union(*(_event_dates(item) for item in working)) if working else set()
+        comparison_working = tuple(
+            item
+            for item in working
+            if editing_placement is None
+            or item.placement_id != editing_placement.placement_id
+        )
+        existing_days = (
+            set().union(*(_event_dates(item) for item in comparison_working))
+            if comparison_working
+            else set()
+        )
         added_days = set().union(*(_event_dates(item) for item in additions))
         if existing_days & added_days:
             st.session_state.event_overlap_warning = True
-        working = working + additions
+        if editing_placement is None:
+            working = working + additions
+        else:
+            replacement = additions[0]
+            working = tuple(
+                replacement
+                if item.placement_id == editing_placement.placement_id
+                else item
+                for item in working
+            )
         st.session_state.event_working_placements = working
+        st.session_state.event_pending_edit_placement_id = additions[0].placement_id
         clean = tuple(st.session_state.get("event_clean_reference", ()))
         st.session_state.event_dirty = not placements_equivalent(working, clean)
         st.rerun()
@@ -1500,33 +1636,41 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
     if not working:
         st.caption("No events are currently placed in this forecast.")
     else:
-        placement_ids = [placement.placement_id for placement in working]
-        if st.session_state.get("event_selected_placement") not in placement_ids:
-            st.session_state.event_selected_placement = placement_ids[0]
-        selected_placement_id = st.radio(
-            "Planned events",
-            placement_ids,
-            format_func=lambda placement_id: next(
-                item.name for item in working if item.placement_id == placement_id
-            ),
-            captions=[
-                f"{placement.start_date:%b %-d}–{placement.end_date:%b %-d} · "
-                + (
-                    "closed"
-                    if placement.template_id == "closed-day"
-                    else f"{placement.peak_percent:+d}% peak"
-                )
-                for placement in working
-            ],
-            key="event_selected_placement",
-            label_visibility="collapsed",
+        selected_placement_id = st.session_state.get(
+            "event_editing_placement_id"
         )
-        if st.button("Remove selected event", use_container_width=True):
+        for placement in working:
+            effect_label = (
+                "closed"
+                if placement.template_id == "closed-day"
+                else f"{placement.peak_percent:+d}% peak"
+            )
+            active = placement.placement_id == selected_placement_id
+            label = (
+                f"{placement.name}  ·  "
+                f"{placement.start_date:%b %-d}–{placement.end_date:%b %-d}  ·  "
+                f"{effect_label}"
+            )
+            if st.button(
+                label,
+                type="primary" if active else "secondary",
+                use_container_width=True,
+                key=f"event_plan_card_{placement.placement_id}",
+            ):
+                st.session_state.event_pending_edit_placement_id = (
+                    placement.placement_id
+                )
+                st.rerun()
+        if st.button(
+            "Remove selected event",
+            use_container_width=True,
+            disabled=selected_placement_id is None,
+        ):
             working = tuple(
                 item for item in working if item.placement_id != selected_placement_id
             )
             st.session_state.event_working_placements = working
-            st.session_state.pop("event_selected_placement", None)
+            st.session_state.pop("event_editing_placement_id", None)
             clean = tuple(st.session_state.get("event_clean_reference", ()))
             st.session_state.event_dirty = not placements_equivalent(working, clean)
             st.rerun()
@@ -1815,21 +1959,26 @@ def render_downtown_dashboard(bundle) -> None:
         }
         .event-template-summary strong { color: var(--ink); font-size: 1rem; }
         .event-template-summary span { color: var(--muted); font-size: .78rem; }
+        [class*="st-key-event_plan_card_"] button {
+            min-height: 3.25rem; justify-content: flex-start;
+            text-align: left; white-space: normal; line-height: 1.25;
+            padding: .7rem .85rem;
+        }
         section[role="dialog"]:has(.st-key-marketing_start_date) {
             width: min(520px, 94vw) !important;
             max-width: 520px !important;
             margin-left: auto !important;
         }
-        section[role="dialog"]:has(.st-key-event_catalog_search) {
+        section[role="dialog"]:has(.event-drawer-anchor) {
             width: min(500px, 96vw) !important;
             max-width: 500px !important;
             margin-left: auto !important;
         }
-        section[role="dialog"]:has(.st-key-event_catalog_search) [data-testid="stRadio"] [role="radiogroup"] > label {
+        section[role="dialog"]:has(.event-drawer-anchor) [data-testid="stRadio"] [role="radiogroup"] > label {
             background: #fffdf8; border: 1px solid #e1dcd1;
             border-radius: 10px; padding: .58rem .65rem; margin-bottom: .35rem;
         }
-        section[role="dialog"]:has(.st-key-event_catalog_search) [data-testid="stVegaLiteChart"] {
+        section[role="dialog"]:has(.event-drawer-anchor) [data-testid="stVegaLiteChart"] {
             background: #f1eee7; border-radius: 12px; padding: .25rem;
         }
         </style>
