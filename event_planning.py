@@ -275,3 +275,22 @@ def placements_equivalent(
     right: tuple[EventPlacement, ...] | list[EventPlacement],
 ) -> bool:
     return tuple(left) == tuple(right)
+
+
+def replace_placement(
+    placements: tuple[EventPlacement, ...] | list[EventPlacement],
+    replacement: EventPlacement,
+) -> tuple[EventPlacement, ...]:
+    """Replace one placed scenario copy while preserving timeline order."""
+
+    if not any(
+        placement.placement_id == replacement.placement_id
+        for placement in placements
+    ):
+        raise KeyError(f"Unknown event placement: {replacement.placement_id}")
+    return tuple(
+        replacement
+        if placement.placement_id == replacement.placement_id
+        else placement
+        for placement in placements
+    )

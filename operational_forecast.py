@@ -25,6 +25,7 @@ from event_planning import (
     make_placement,
     placements_equivalent,
     recurring_starts,
+    replace_placement,
     resample_effect,
     score_event_plan,
     template_by_id,
@@ -1560,6 +1561,40 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
     else:
         st.success(f"Suggested scenario remains within prior evidence · {peak:+d}% peak")
 
+    def apply_visible_event_edit(
+        current_working: tuple[EventPlacement, ...],
+    ) -> tuple[EventPlacement, ...]:
+        """Fold the open event editor into plan actions before they leave the drawer."""
+
+        if editing_placement is None:
+            return current_working
+        replacement = make_placement(
+            template.template_id,
+            start_date=start,
+            duration_days=duration,
+            magnitude_percent=magnitude,
+            custom_daily_percent=custom_percent,
+            occurrence=editing_placement.occurrence,
+            placement_id=editing_placement.placement_id,
+        )
+        comparison_working = tuple(
+            item
+            for item in current_working
+            if item.placement_id != editing_placement.placement_id
+        )
+        existing_days = (
+            set().union(*(_event_dates(item) for item in comparison_working))
+            if comparison_working
+            else set()
+        )
+        if existing_days & _event_dates(replacement):
+            st.session_state.event_overlap_warning = True
+        updated = replace_placement(current_working, replacement)
+        st.session_state.event_working_placements = updated
+        clean = tuple(st.session_state.get("event_clean_reference", ()))
+        st.session_state.event_dirty = not placements_equivalent(updated, clean)
+        return updated
+
     action_label = (
         "Update selected event"
         if editing_placement is not None
@@ -1616,13 +1651,7 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
         if editing_placement is None:
             working = working + additions
         else:
-            replacement = additions[0]
-            working = tuple(
-                replacement
-                if item.placement_id == editing_placement.placement_id
-                else item
-                for item in working
-            )
+            working = replace_placement(working, additions[0])
         st.session_state.event_working_placements = working
         st.session_state.event_pending_edit_placement_id = additions[0].placement_id
         clean = tuple(st.session_state.get("event_clean_reference", ()))
@@ -1679,10 +1708,12 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
     st.caption("MVP event drafts are retained for this Streamlit session only.")
     preview_column, save_column, discard_column = st.columns(3)
     if preview_column.button("Preview", use_container_width=True):
+        working = apply_visible_event_edit(working)
         st.session_state.event_draft_mode = True
         st.session_state.event_drawer_open = False
         st.rerun()
     if save_column.button("Save draft", use_container_width=True):
+        working = apply_visible_event_edit(working)
         _save_event_draft_to_session()
         st.session_state.event_draft_mode = True
         st.session_state.event_drawer_open = False
@@ -1696,6 +1727,7 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
         type="primary",
         use_container_width=True,
     ):
+        working = apply_visible_event_edit(working)
         st.session_state.event_published_placements = working
         st.session_state.pop("event_saved_draft", None)
         _clear_event_working_draft()

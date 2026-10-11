@@ -5,6 +5,7 @@ import pandas as pd
 from event_planning import (
     make_placement,
     recurring_starts,
+    replace_placement,
     resample_effect,
     score_event_plan,
 )
@@ -73,3 +74,31 @@ def test_recurrence_stays_inside_visible_horizon():
         every_weeks=1,
     )
     assert starts == (date(2026, 10, 11), date(2026, 10, 18))
+
+
+def test_replacing_an_edited_shape_preserves_the_timeline_slot():
+    original = make_placement(
+        "payday-friday",
+        start_date=date(2026, 10, 11),
+        placement_id="selected-event",
+    )
+    later = make_placement(
+        "payday-friday",
+        start_date=date(2026, 10, 18),
+        placement_id="later-event",
+    )
+    edited = make_placement(
+        "payday-friday",
+        start_date=date(2026, 10, 11),
+        custom_daily_percent=(18, 30),
+        placement_id="selected-event",
+    )
+
+    updated = replace_placement((original, later), edited)
+
+    assert [placement.placement_id for placement in updated] == [
+        "selected-event",
+        "later-event",
+    ]
+    assert updated[0].daily_effect == (0.18, 0.30)
+    assert updated[1] == later
