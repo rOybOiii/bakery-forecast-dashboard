@@ -1022,10 +1022,9 @@ def _marketing_drawer(baseline: pd.DataFrame) -> None:
                 f"{_money(result.summary.carryover_beyond_horizon)}."
             )
     st.divider()
-    preview_column, save_column = st.columns(2)
+    preview_column, save_column, discard_column = st.columns(3)
     if preview_column.button(
-        "Preview on forecast",
-        type="primary",
+        "Preview",
         disabled=candidate is None,
         use_container_width=True,
     ):
@@ -1044,15 +1043,17 @@ def _marketing_drawer(baseline: pd.DataFrame) -> None:
         st.session_state.marketing_drawer_open = False
         st.session_state.marketing_exit_requested = False
         st.rerun()
-    implement_column, discard_column = st.columns(2)
-    if implement_column.button(
-        "Implement plan", disabled=candidate is None, use_container_width=True
-    ):
-        save_plan_state(PLAN_STATE_PATH, implement_plan(state, candidate))
+    if discard_column.button("Discard changes", use_container_width=True):
         _clear_working_draft()
         st.session_state.marketing_draft_mode = False
         st.rerun()
-    if discard_column.button("Discard changes", use_container_width=True):
+    if st.button(
+        "Implement plan",
+        type="primary",
+        disabled=candidate is None,
+        use_container_width=True,
+    ):
+        save_plan_state(PLAN_STATE_PATH, implement_plan(state, candidate))
         _clear_working_draft()
         st.session_state.marketing_draft_mode = False
         st.rerun()
