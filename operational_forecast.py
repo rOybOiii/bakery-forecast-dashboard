@@ -30,6 +30,7 @@ from event_planning import (
     score_event_plan,
     template_by_id,
 )
+from events_workspace import render_events_workspace
 from marketing_planning import (
     CHANNEL_ORDER,
     CHANNEL_SPECS,
@@ -60,6 +61,7 @@ MMM_FIT_VERSION = "frozen-mmm-preview-v1"
 RESTAURANT = "downtown"
 PAGE_FORECAST = "Forecast"
 PAGE_REPLAY = "Forecast replay"
+PAGE_EVENTS = "Events"
 
 
 def _money(value: float, *, signed: bool = False) -> str:
@@ -424,14 +426,13 @@ def _sidebar_navigation() -> str:
         st.markdown("### Workspace")
         requested = st.radio(
             "Workspace",
-            [PAGE_FORECAST, PAGE_REPLAY],
-            index=0 if active == PAGE_FORECAST else 1,
+            [PAGE_FORECAST, PAGE_EVENTS, PAGE_REPLAY],
+            index=[PAGE_FORECAST, PAGE_EVENTS, PAGE_REPLAY].index(active),
             label_visibility="collapsed",
             key=f"downtown_nav_picker_{nonce}",
         )
         st.button("Marketing", disabled=True, use_container_width=True)
-        st.button("Events", disabled=True, use_container_width=True)
-        st.caption("Marketing and event workspaces arrive after this MVP slice.")
+        st.caption("The dedicated marketing workspace arrives after this MVP slice.")
     if requested != active:
         if _has_unsaved_changes():
             st.session_state.downtown_pending_nav = {
@@ -2020,5 +2021,7 @@ def render_downtown_dashboard(bundle) -> None:
     page = _sidebar_navigation()
     if page == PAGE_REPLAY:
         _render_replay(bundle)
+    elif page == PAGE_EVENTS:
+        render_events_workspace(bundle)
     else:
         _render_forecast(bundle)
