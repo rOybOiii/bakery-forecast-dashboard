@@ -18,6 +18,17 @@ from dashboard_data import (
     history_rows,
     recent_rows,
 )
+from event_planning import (
+    EVENT_CATALOG,
+    EventPlacement,
+    EventScenarioResult,
+    make_placement,
+    placements_equivalent,
+    recurring_starts,
+    resample_effect,
+    score_event_plan,
+    template_by_id,
+)
 from marketing_planning import (
     CHANNEL_ORDER,
     CHANNEL_SPECS,
@@ -92,6 +103,53 @@ def _clear_working_draft() -> None:
     ):
         st.session_state.pop(key, None)
     st.session_state.marketing_clear_widget_state = True
+
+
+def _clear_event_working_draft() -> None:
+    for key in (
+        "event_working_placements",
+        "event_clean_reference",
+        "event_dirty",
+        "event_drawer_open",
+        "event_exit_requested",
+    ):
+        st.session_state.pop(key, None)
+
+
+def _published_event_placements() -> tuple[EventPlacement, ...]:
+    return tuple(st.session_state.get("event_published_placements", ()))
+
+
+def _begin_event_draft() -> None:
+    if "event_working_placements" not in st.session_state:
+        source = st.session_state.get(
+            "event_saved_draft", _published_event_placements()
+        )
+        working = tuple(source)
+        st.session_state.event_working_placements = working
+        st.session_state.event_clean_reference = working
+        st.session_state.event_dirty = False
+    st.session_state.event_draft_mode = True
+    st.session_state.event_drawer_open = True
+
+
+def _working_event_placements() -> tuple[EventPlacement, ...]:
+    if "event_working_placements" not in st.session_state:
+        _begin_event_draft()
+    return tuple(st.session_state.event_working_placements)
+
+
+def _save_event_draft_to_session() -> None:
+    placements = _working_event_placements()
+    st.session_state.event_saved_draft = placements
+    st.session_state.event_clean_reference = placements
+    st.session_state.event_dirty = False
+
+
+def _has_unsaved_changes() -> bool:
+    return bool(st.session_state.get("marketing_dirty")) or bool(
+        st.session_state.get("event_dirty")
+    )
 
 
 def _apply_pending_widget_clear() -> None:
@@ -282,16 +340,25 @@ def _navigation_guard() -> None:
         st.session_state.pop("downtown_pending_nav", None)
         st.rerun()
     if st.button("Save draft and continue", use_container_width=True):
-        state = _plan_state()
-        plan = st.session_state.marketing_working_plan
-        save_plan_state(PLAN_STATE_PATH, save_draft(state, plan))
-        _clear_working_draft()
-        st.session_state.marketing_draft_mode = False
+        if bool(st.session_state.get("marketing_dirty")):
+            state = _plan_state()
+            plan = st.session_state.marketing_working_plan
+            save_plan_state(PLAN_STATE_PATH, save_draft(state, plan))
+            _clear_working_draft()
+            st.session_state.marketing_draft_mode = False
+        if bool(st.session_state.get("event_dirty")):
+            _save_event_draft_to_session()
+            _clear_event_working_draft()
+            st.session_state.event_draft_mode = False
         _complete_navigation(target)
         st.rerun()
     if st.button("Discard changes and continue", use_container_width=True):
-        _clear_working_draft()
+        if bool(st.session_state.get("marketing_dirty")):
+            _clear_working_draft()
+        if bool(st.session_state.get("event_dirty")):
+            _clear_event_working_draft()
         st.session_state.marketing_draft_mode = False
+        st.session_state.event_draft_mode = False
         _complete_navigation(target)
         st.rerun()
 
@@ -317,7 +384,7 @@ def _sidebar_navigation() -> str:
         st.button("Events", disabled=True, use_container_width=True)
         st.caption("Marketing and event workspaces arrive after this MVP slice.")
     if requested != active:
-        if bool(st.session_state.get("marketing_dirty")):
+        if _has_unsaved_changes():
             st.session_state.downtown_pending_nav = {
                 "kind": "page",
                 "value": requested,
@@ -330,9 +397,9 @@ def _sidebar_navigation() -> str:
 
 
 def _operational_chart(
-    published: ScenarioResult,
+    published: EventScenarioResult,
     *,
-    draft: ScenarioResult | None,
+    draft: EventScenarioResult | None,
     actual_value: float | None,
 ) -> alt.Chart:
     daily = published.daily.copy()
@@ -342,12 +409,12 @@ def _operational_chart(
     )
     band = base.mark_area(color="#8ba797", opacity=0.20).encode(
         y=alt.Y(
-            "operational_q05:Q",
+            "event_operational_q05:Q",
             title="Sales",
             axis=alt.Axis(format="$,.0f"),
             scale=alt.Scale(zero=False),
         ),
-        y2="operational_q95:Q",
+        y2="event_operational_q95:Q",
     )
     organic = base.mark_line(color="#6f8790", strokeDash=[6, 5], strokeWidth=2).encode(
         y=alt.Y("median:Q", scale=alt.Scale(zero=False)),
@@ -357,19 +424,40 @@ def _operational_chart(
         ],
     )
     published_line = base.mark_line(color="#2f6b55", strokeWidth=3, point=True).encode(
-        y=alt.Y("operational_median:Q", scale=alt.Scale(zero=False)),
+        y=alt.Y("event_operational_median:Q", scale=alt.Scale(zero=False)),
         tooltip=[
             alt.Tooltip("series_date:T", title="Date", format="%A, %b %-d"),
-            alt.Tooltip("operational_median:Q", title="Implemented forecast", format="$,.0f"),
+            alt.Tooltip("event_operational_median:Q", title="Implemented forecast", format="$,.0f"),
             alt.Tooltip("marketing_lift:Q", title="Marketing lift", format="$,.0f"),
+            alt.Tooltip("event_lift:Q", title="Event effect", format="$,.0f"),
         ],
     )
     layers: list[alt.Chart] = [band, organic, published_line]
     if draft is not None:
-        comparison = daily[["series_date", "operational_median"]].rename(
-            columns={"operational_median": "published_forecast"}
+        comparison = daily[["series_date", "event_operational_median"]].rename(
+            columns={"event_operational_median": "published_forecast"}
         )
-        comparison["draft_forecast"] = draft.daily["operational_median"].to_numpy()
+        comparison["draft_forecast"] = draft.daily[
+            "event_operational_median"
+        ].to_numpy()
+        comparison["draft_q05"] = draft.daily[
+            "event_operational_q05"
+        ].to_numpy()
+        comparison["draft_q95"] = draft.daily[
+            "event_operational_q95"
+        ].to_numpy()
+        draft_band = alt.Chart(comparison).mark_area(
+            color="#d96a47", opacity=0.10
+        ).encode(
+            x=alt.X("series_date:T", title=None),
+            y=alt.Y(
+                "draft_q05:Q",
+                title="Sales",
+                axis=alt.Axis(format="$,.0f"),
+                scale=alt.Scale(zero=False),
+            ),
+            y2="draft_q95:Q",
+        )
         gap = alt.Chart(comparison).mark_area(color="#d96a47", opacity=0.16).encode(
             x=alt.X("series_date:T", title=None),
             y=alt.Y(
@@ -391,7 +479,7 @@ def _operational_chart(
                 alt.Tooltip("draft_forecast:Q", title="Draft", format="$,.0f"),
             ],
         )
-        layers.extend([gap, draft_line])
+        layers.extend([draft_band, gap, draft_line])
     if actual_value is not None:
         actual = pd.DataFrame(
             {
@@ -1059,6 +1147,416 @@ def _marketing_drawer(baseline: pd.DataFrame) -> None:
         st.rerun()
 
 
+def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart:
+    template = template_by_id(template_id)
+    rows = [{"day": 0, "median": 0.0, "q05": 0.0, "q95": 0.0}]
+    for day, value in enumerate(effect, start=1):
+        if value >= 0:
+            lower = value * template.uncertainty_low_factor
+            upper = value * template.uncertainty_high_factor
+        else:
+            lower = value * template.uncertainty_high_factor
+            upper = value * template.uncertainty_low_factor
+        rows.append(
+            {
+                "day": day,
+                "median": 100 * value,
+                "q05": 100 * lower,
+                "q95": 100 * upper,
+            }
+        )
+    rows.append(
+        {
+            "day": len(effect) + 1,
+            "median": 0.0,
+            "q05": 0.0,
+            "q95": 0.0,
+        }
+    )
+    frame = pd.DataFrame(rows)
+    base = alt.Chart(frame).encode(
+        x=alt.X(
+            "day:Q",
+            title="Event day",
+            axis=alt.Axis(tickMinStep=1, labelExpr="datum.value == 0 ? '' : datum.value"),
+        )
+    )
+    band = base.mark_area(color="#d96a47", opacity=0.18).encode(
+        y=alt.Y(
+            "q05:Q",
+            title="Effect on sales",
+            axis=alt.Axis(format="+.0f"),
+            scale=alt.Scale(zero=True),
+        ),
+        y2="q95:Q",
+        tooltip=[
+            alt.Tooltip("day:Q", title="Event day"),
+            alt.Tooltip("q05:Q", title="90% lower", format="+.0f"),
+            alt.Tooltip("q95:Q", title="90% upper", format="+.0f"),
+        ],
+    )
+    median = base.mark_line(
+        color="#d96a47", strokeWidth=3, point=alt.OverlayMarkDef(filled=True, size=55)
+    ).encode(
+        y=alt.Y("median:Q", scale=alt.Scale(zero=True)),
+        tooltip=[
+            alt.Tooltip("day:Q", title="Event day"),
+            alt.Tooltip("median:Q", title="Median effect", format="+.0f"),
+        ],
+    )
+    zero = alt.Chart(pd.DataFrame({"value": [0]})).mark_rule(
+        color="#9aa39d", strokeDash=[4, 4]
+    ).encode(y="value:Q")
+    return (
+        alt.layer(band, zero, median)
+        .properties(height=170)
+        .configure_view(strokeOpacity=0)
+        .configure_axis(
+            gridColor="#e3ded3", labelColor="#66736c", titleColor="#66736c"
+        )
+    )
+
+
+def _event_catalog_matches(
+    *, search: str, category: str | None, tags: list[str], suggested_only: bool
+) -> list:
+    query = search.strip().casefold()
+    matches = []
+    for template in EVENT_CATALOG:
+        haystack = " ".join(
+            (
+                template.name,
+                template.category,
+                template.evidence,
+                template.timing_hint,
+                *template.tags,
+            )
+        ).casefold()
+        if suggested_only and not template.recommended and not query:
+            continue
+        if query and query not in haystack:
+            continue
+        if category and template.category != category:
+            continue
+        if tags and not all(tag in template.tags for tag in tags):
+            continue
+        matches.append(template)
+    return matches
+
+
+def _event_dates(placement: EventPlacement) -> set[date]:
+    return {
+        placement.start_date + timedelta(days=offset)
+        for offset in range(len(placement.daily_effect))
+    }
+
+
+@st.dialog(
+    "Plan forecast events",
+    width="small",
+    dismissible=False,
+    position="right",
+)
+def _event_drawer(baseline: pd.DataFrame) -> None:
+    working = _working_event_placements()
+    horizon_start = baseline["target_date"].min().date()
+    horizon_end = baseline["target_date"].max().date()
+
+    st.caption(
+        "Choose a known event, place it in the forecast, and adjust only this "
+        "scenario copy. Historical event records remain unchanged."
+    )
+    view = st.segmented_control(
+        "Catalog view",
+        ["Suggested", "Browse all"],
+        default="Suggested",
+        key="event_catalog_view",
+        width="stretch",
+    ) or "Suggested"
+    search = st.text_input(
+        "Search events",
+        placeholder="Search names, categories, or tags",
+        key="event_catalog_search",
+    )
+    category: str | None = None
+    tags: list[str] = []
+    if view == "Browse all":
+        categories = sorted({template.category for template in EVENT_CATALOG})
+        category = st.pills(
+            "Category",
+            categories,
+            selection_mode="single",
+            key="event_category_filter",
+        )
+        popular_tags = [
+            "annual",
+            "recurring",
+            "downtown",
+            "one-day",
+            "two-day",
+            "three-day",
+            "sharp-peak",
+            "slow-decay",
+            "negative-tail",
+        ]
+        tags = st.pills(
+            "Tags",
+            popular_tags,
+            selection_mode="multi",
+            key="event_tag_filter",
+        ) or []
+
+    matches = _event_catalog_matches(
+        search=search,
+        category=category,
+        tags=list(tags),
+        suggested_only=view == "Suggested",
+    )
+    if not matches:
+        st.info("No catalog events match those filters.")
+        st.stop()
+    option_ids = [template.template_id for template in matches]
+    if st.session_state.get("event_template_id") not in option_ids:
+        st.session_state.event_template_id = option_ids[0]
+    selected_id = st.radio(
+        "Event catalog",
+        option_ids,
+        format_func=lambda template_id: template_by_id(template_id).name,
+        captions=[
+            f"{template.timing_hint} · {template.evidence} · "
+            f"{', '.join(template.tags[:3])}"
+            for template in matches
+        ],
+        key="event_template_id",
+        label_visibility="collapsed",
+    )
+    template = template_by_id(selected_id)
+    st.markdown(
+        f'<div class="event-template-summary"><strong>{template.name}</strong>'
+        f'<span>{template.category} · {template.evidence}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    occurrence = st.segmented_control(
+        "Occurrence",
+        ["One time", "Recurring"],
+        default="Recurring" if "recurring" in template.tags else "One time",
+        key=f"event_occurrence_{template.template_id}",
+        width="stretch",
+    ) or "One time"
+    timing_columns = st.columns(2)
+    start = timing_columns[0].date_input(
+        "Start date",
+        value=horizon_start,
+        min_value=max(date.today(), horizon_start),
+        max_value=horizon_end,
+        key=f"event_start_{template.template_id}",
+    )
+    maximum_duration = min(7, (horizon_end - start).days + 1)
+    duration_key = f"event_duration_{template.template_id}"
+    duration_defaults = {}
+    if duration_key not in st.session_state:
+        duration_defaults["value"] = min(template.default_duration, maximum_duration)
+    elif int(st.session_state[duration_key]) > maximum_duration:
+        st.session_state[duration_key] = maximum_duration
+    duration = int(
+        timing_columns[1].number_input(
+            "Duration",
+            min_value=1,
+            max_value=maximum_duration,
+            step=1,
+            key=duration_key,
+            **duration_defaults,
+        )
+    )
+    every_weeks = 1
+    if occurrence == "Recurring":
+        every_weeks = int(
+            st.number_input(
+                "Repeat every (weeks)",
+                min_value=1,
+                max_value=4,
+                value=1,
+                step=1,
+                key=f"event_repeat_{template.template_id}",
+            )
+        )
+        starts = recurring_starts(
+            start,
+            horizon_end=horizon_end,
+            every_weeks=every_weeks,
+        )
+        st.caption(
+            "Planned inside this forecast: "
+            + ", ".join(value.strftime("%b %-d") for value in starts)
+        )
+
+    is_closure = template.template_id == "closed-day"
+    magnitude = int(
+        st.slider(
+            "Overall magnitude",
+            min_value=50,
+            max_value=160,
+            value=100,
+            step=5,
+            format="%d%%",
+            disabled=is_closure,
+            key=f"event_magnitude_{template.template_id}",
+        )
+    )
+    suggested_effect = tuple(
+        value * magnitude / 100.0
+        for value in resample_effect(template.daily_effect, duration)
+    )
+    edit_daily = st.toggle(
+        "Edit daily shape",
+        value=False,
+        disabled=is_closure,
+        help="Move individual event days without changing the historical event.",
+        key=f"event_edit_shape_{template.template_id}",
+    )
+    custom_percent: tuple[float, ...] | None = None
+    preview_effect = suggested_effect
+    if edit_daily:
+        edited: list[float] = []
+        st.caption("Adjust each day. Values outside the historical range remain scenarios, not new evidence.")
+        for day_index, value in enumerate(suggested_effect, start=1):
+            day_value = st.slider(
+                f"Day {day_index}",
+                min_value=-30,
+                max_value=60,
+                value=int(round(100 * value)),
+                step=1,
+                format="%d%%",
+                key=f"event_day_{template.template_id}_{duration}_{day_index}",
+            )
+            edited.append(float(day_value))
+        custom_percent = tuple(edited)
+        preview_effect = tuple(value / 100.0 for value in edited)
+
+    st.altair_chart(
+        _event_shape_chart(template.template_id, preview_effect),
+        width="stretch",
+    )
+    st.caption(
+        "Terracotta is the median event effect; the shaded area is its 90% predictive range."
+    )
+    peak = int(round(100 * max(preview_effect, key=abs)))
+    if not is_closure and (
+        magnitude > 125
+        or any(
+            abs(current - suggested) > 0.10
+            for current, suggested in zip(preview_effect, suggested_effect)
+        )
+    ):
+        st.warning(
+            "This scenario extends beyond the strongest historical evidence, so the "
+            "forecast should retain wider uncertainty."
+        )
+    elif is_closure:
+        st.caption("Closed day sets the available sales forecast to zero.")
+    else:
+        st.success(f"Suggested scenario remains within prior evidence · {peak:+d}% peak")
+
+    if st.button(
+        "Add to forecast timeline",
+        type="primary",
+        use_container_width=True,
+    ):
+        starts = (
+            recurring_starts(
+                start,
+                horizon_end=horizon_end,
+                every_weeks=every_weeks,
+            )
+            if occurrence == "Recurring"
+            else (start,)
+        )
+        additions = tuple(
+            make_placement(
+                template.template_id,
+                start_date=event_start,
+                duration_days=duration,
+                magnitude_percent=magnitude,
+                custom_daily_percent=custom_percent,
+                occurrence=occurrence,
+            )
+            for event_start in starts
+        )
+        existing_days = set().union(*(_event_dates(item) for item in working)) if working else set()
+        added_days = set().union(*(_event_dates(item) for item in additions))
+        if existing_days & added_days:
+            st.session_state.event_overlap_warning = True
+        working = working + additions
+        st.session_state.event_working_placements = working
+        clean = tuple(st.session_state.get("event_clean_reference", ()))
+        st.session_state.event_dirty = not placements_equivalent(working, clean)
+        st.rerun()
+
+    st.divider()
+    st.markdown(f"**Event plan · {len(working)} placement{'s' if len(working) != 1 else ''}**")
+    if st.session_state.pop("event_overlap_warning", False):
+        st.warning("At least one planned event overlaps another event. Review the combined effect before implementing.")
+    if not working:
+        st.caption("No events are currently placed in this forecast.")
+    else:
+        placement_ids = [placement.placement_id for placement in working]
+        if st.session_state.get("event_selected_placement") not in placement_ids:
+            st.session_state.event_selected_placement = placement_ids[0]
+        selected_placement_id = st.radio(
+            "Planned events",
+            placement_ids,
+            format_func=lambda placement_id: next(
+                item.name for item in working if item.placement_id == placement_id
+            ),
+            captions=[
+                f"{placement.start_date:%b %-d}–{placement.end_date:%b %-d} · "
+                + (
+                    "closed"
+                    if placement.template_id == "closed-day"
+                    else f"{placement.peak_percent:+d}% peak"
+                )
+                for placement in working
+            ],
+            key="event_selected_placement",
+            label_visibility="collapsed",
+        )
+        if st.button("Remove selected event", use_container_width=True):
+            working = tuple(
+                item for item in working if item.placement_id != selected_placement_id
+            )
+            st.session_state.event_working_placements = working
+            st.session_state.pop("event_selected_placement", None)
+            clean = tuple(st.session_state.get("event_clean_reference", ()))
+            st.session_state.event_dirty = not placements_equivalent(working, clean)
+            st.rerun()
+
+    st.divider()
+    st.caption("MVP event drafts are retained for this Streamlit session only.")
+    preview_column, save_column, discard_column = st.columns(3)
+    if preview_column.button("Preview", use_container_width=True):
+        st.session_state.event_draft_mode = True
+        st.session_state.event_drawer_open = False
+        st.rerun()
+    if save_column.button("Save draft", use_container_width=True):
+        _save_event_draft_to_session()
+        st.session_state.event_draft_mode = True
+        st.session_state.event_drawer_open = False
+        st.rerun()
+    if discard_column.button("Discard", use_container_width=True):
+        _clear_event_working_draft()
+        st.session_state.event_draft_mode = False
+        st.rerun()
+    if st.button(
+        "Implement event plan",
+        type="primary",
+        use_container_width=True,
+    ):
+        st.session_state.event_published_placements = working
+        st.session_state.pop("event_saved_draft", None)
+        _clear_event_working_draft()
+        st.session_state.event_draft_mode = False
+        st.rerun()
 def _render_replay(bundle) -> None:
     st.markdown('<div class="dashboard-kicker">Downtown</div>', unsafe_allow_html=True)
     st.markdown('<h1 class="operational-title">Forecast replay</h1>', unsafe_allow_html=True)
@@ -1086,11 +1584,25 @@ def _render_forecast(bundle) -> None:
     baseline = _shifted_baseline(bundle)
     state = _plan_state()
     published_plan = _published_plan(state, baseline)
-    published = score_plan(baseline, published_plan)
-    draft_mode = bool(st.session_state.get("marketing_draft_mode"))
-    draft_plan = _working_plan(state, baseline) if draft_mode else None
-    draft = score_plan(baseline, draft_plan) if draft_plan else None
-    dirty = bool(st.session_state.get("marketing_dirty"))
+    published_marketing = score_plan(baseline, published_plan)
+    published_events = _published_event_placements()
+    published = score_event_plan(published_marketing.daily, published_events)
+    marketing_draft_mode = bool(st.session_state.get("marketing_draft_mode"))
+    event_draft_mode = bool(st.session_state.get("event_draft_mode"))
+    draft_mode = marketing_draft_mode or event_draft_mode
+    draft_plan = _working_plan(state, baseline) if marketing_draft_mode else None
+    draft_marketing = (
+        score_plan(baseline, draft_plan) if draft_plan else published_marketing
+    )
+    draft_events = (
+        _working_event_placements() if event_draft_mode else published_events
+    )
+    draft = (
+        score_event_plan(draft_marketing.daily, draft_events)
+        if draft_mode
+        else None
+    )
+    dirty = _has_unsaved_changes()
     _browser_leave_guard(dirty)
 
     title_column, mode_column = st.columns([4, 1])
@@ -1116,22 +1628,56 @@ def _render_forecast(bundle) -> None:
             unsafe_allow_html=True,
         )
         if st.button("Continue editing", type="primary"):
-            st.session_state.marketing_drawer_open = True
+            if event_draft_mode:
+                st.session_state.event_drawer_open = True
+            else:
+                st.session_state.marketing_drawer_open = True
             st.rerun()
 
     if draft is None:
         metric_values = (
-            ("Expected sales", published.summary.expected_total, "90% range shown below"),
-            ("Organic baseline", published.summary.organic_total, "Before marketing"),
-            ("Implemented marketing lift", published.summary.marketing_lift, f"From {_money(published.summary.spend)} spend"),
-            ("Published event lift", 0.0, "Event planning is a placeholder"),
+            (
+                "Expected sales",
+                float(published.daily["event_operational_median"].sum()),
+                "90% range shown below",
+            ),
+            (
+                "Organic baseline",
+                published_marketing.summary.organic_total,
+                "Before marketing and events",
+            ),
+            (
+                "Implemented marketing lift",
+                published_marketing.summary.marketing_lift,
+                f"From {_money(published_marketing.summary.spend)} spend",
+            ),
+            (
+                "Published event lift",
+                published.event_lift,
+                f"From {published.placement_count} planned placement{'s' if published.placement_count != 1 else ''}",
+            ),
         )
     else:
+        draft_total = float(draft.daily["event_operational_median"].sum())
+        published_total = float(published.daily["event_operational_median"].sum())
+        final_metric = (
+            (
+                "Total draft spend",
+                draft_marketing.summary.spend,
+                f"Marginal ROAS {draft_marketing.summary.marginal_roas:.2f}×",
+            )
+            if marketing_draft_mode
+            else (
+                "Draft event lift",
+                draft.event_lift,
+                f"From {draft.placement_count} planned placement{'s' if draft.placement_count != 1 else ''}",
+            )
+        )
         metric_values = (
-            ("Implemented forecast", published.summary.expected_total, "Current operating plan"),
-            ("Draft forecast", draft.summary.expected_total, "Not yet operational"),
-            ("Draft change", draft.summary.expected_total - published.summary.expected_total, "Above implemented plan"),
-            ("Total draft spend", draft.summary.spend, f"Marginal ROAS {draft.summary.marginal_roas:.2f}×"),
+            ("Implemented forecast", published_total, "Current operating plan"),
+            ("Draft forecast", draft_total, "Not yet operational"),
+            ("Draft change", draft_total - published_total, "Compared with implemented plan"),
+            final_metric,
         )
     metric_columns = st.columns(4)
     for column, (label, value, help_text) in zip(metric_columns, metric_values):
@@ -1144,7 +1690,7 @@ def _render_forecast(bundle) -> None:
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="section-note">Organic baseline is dashed. Green is implemented marketing; terracotta is the draft preview.</div>',
+        '<div class="section-note">Organic baseline is dashed. Green includes implemented marketing and events; terracotta is the combined draft preview.</div>',
         unsafe_allow_html=True,
     )
     latest = recent_rows(bundle, RESTAURANT)
@@ -1166,8 +1712,8 @@ def _render_forecast(bundle) -> None:
             else:
                 st.caption(
                     (
-                        f"{_money(published.summary.spend)} is implemented across eligible channels; "
-                        f"expected visible lift is {_money(published.summary.marketing_lift)}."
+                        f"{_money(published_marketing.summary.spend)} is implemented across eligible channels; "
+                        f"expected visible lift is {_money(published_marketing.summary.marketing_lift)}."
                     ).replace("$", r"\$")
                 )
             if st.button("Review marketing", type="primary", key="review_marketing"):
@@ -1176,11 +1722,29 @@ def _render_forecast(bundle) -> None:
     with event_column:
         with st.container(border=True):
             st.markdown("**Upcoming events**")
-            st.caption("Event planning is reserved for the next MVP milestone.")
-            st.button("Review events", disabled=True, key="review_events")
+            if published.placement_count:
+                st.caption(
+                    (
+                        f"{published.placement_count} event placement"
+                        f"{'s are' if published.placement_count != 1 else ' is'} implemented; "
+                        f"expected lift is {_money(published.event_lift, signed=True)}."
+                    ).replace("$", r"\$")
+                )
+            else:
+                st.caption(
+                    "No events are implemented. Start with likely events or browse the catalog."
+                )
+            if st.button("Review events", type="primary", key="review_events"):
+                _begin_event_draft()
+                st.rerun()
 
     with st.container(border=True):
-        if draft is not None and any(zone != "green" for zone in draft.saturation.values()):
+        if (
+            marketing_draft_mode
+            and any(
+                zone != "green" for zone in draft_marketing.saturation.values()
+            )
+        ):
             st.markdown("**⚠️ One decision requires review**")
             st.warning("One or more draft channel allocations enter a diminishing-return or saturated range.")
         else:
@@ -1189,6 +1753,8 @@ def _render_forecast(bundle) -> None:
 
     if st.session_state.get("marketing_drawer_open"):
         _marketing_drawer(baseline)
+    if st.session_state.get("event_drawer_open"):
+        _event_drawer(baseline)
 
 
 def render_downtown_dashboard(bundle) -> None:
@@ -1242,10 +1808,29 @@ def render_downtown_dashboard(bundle) -> None:
             line-height: 1.15; margin: .15rem 0;
         }
         .manual-plan-total small { color: #879089; }
+        .event-template-summary {
+            display: flex; flex-direction: column; gap: .2rem;
+            background: #f4e0d8; border-left: 4px solid #d96a47;
+            border-radius: 10px; padding: .75rem .85rem; margin: .75rem 0;
+        }
+        .event-template-summary strong { color: var(--ink); font-size: 1rem; }
+        .event-template-summary span { color: var(--muted); font-size: .78rem; }
         section[role="dialog"]:has(.st-key-marketing_start_date) {
             width: min(520px, 94vw) !important;
             max-width: 520px !important;
             margin-left: auto !important;
+        }
+        section[role="dialog"]:has(.st-key-event_catalog_search) {
+            width: min(500px, 96vw) !important;
+            max-width: 500px !important;
+            margin-left: auto !important;
+        }
+        section[role="dialog"]:has(.st-key-event_catalog_search) [data-testid="stRadio"] [role="radiogroup"] > label {
+            background: #fffdf8; border: 1px solid #e1dcd1;
+            border-radius: 10px; padding: .58rem .65rem; margin-bottom: .35rem;
+        }
+        section[role="dialog"]:has(.st-key-event_catalog_search) [data-testid="stVegaLiteChart"] {
+            background: #f1eee7; border-radius: 12px; padding: .25rem;
         }
         </style>
         """,

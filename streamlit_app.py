@@ -260,7 +260,10 @@ with st.sidebar:
     if requested_restaurant != st.session_state.active_restaurant:
         if (
             st.session_state.active_restaurant == "downtown"
-            and bool(st.session_state.get("marketing_dirty"))
+            and (
+                bool(st.session_state.get("marketing_dirty"))
+                or bool(st.session_state.get("event_dirty"))
+            )
         ):
             st.session_state.downtown_pending_nav = {
                 "kind": "restaurant",

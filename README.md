@@ -43,3 +43,14 @@ Plans can be optimized or edited manually as one sequence of learning-aware
 spend blocks, using a four-day cadence by default. Each block carries daily
 channel spend into the adstock and saturation preview, and managers can use an
 explicit override when a block needs to exceed its recommended channel range.
+
+## Downtown event-plan MVP
+
+The forecast page also includes a front-end-only event planning drawer. It
+offers a static searchable catalog, suggested events for the visible horizon,
+category and morphology tags, recurring placement, forecast-copy duration and
+magnitude edits, daily shape edits, and 90% effect ranges. Event scenarios can
+be previewed or implemented on the operational forecast without altering the
+historical event templates. Drafts and implemented event plans currently live
+only in Streamlit session state; a durable database and event-review workspace
+remain future work.
