@@ -163,6 +163,62 @@ def default_segments(start_date: date, end_date: date) -> tuple[EventSegment, ..
     return auto_phase_segments(start_date, end_date)
 
 
+EVENT_PHASES = ("Buildup", "Crest", "Peak", "Tail")
+
+
+def auto_phase_assignments(
+    start_date: date,
+    end_date: date,
+    *,
+    peak_date: date | None = None,
+) -> tuple[tuple[date, str], ...]:
+    """Expand the automatic morphology into an editable label for every day."""
+
+    assignments: list[tuple[date, str]] = []
+    for segment in auto_phase_segments(start_date, end_date, peak_date=peak_date):
+        current = segment.start_date
+        while current <= segment.end_date:
+            assignments.append((current, segment.name))
+            current += timedelta(days=1)
+    return tuple(sorted(assignments))
+
+
+def segments_from_phase_assignments(
+    assignments: Iterable[tuple[date, str]],
+) -> tuple[EventSegment, ...]:
+    """Collapse editable daily phase labels into contiguous display segments."""
+
+    ordered = sorted(assignments)
+    if not ordered:
+        return ()
+    segments: list[EventSegment] = []
+    segment_start, segment_name = ordered[0]
+    previous_date = segment_start
+    for current_date, current_name in ordered[1:]:
+        if current_date != previous_date + timedelta(days=1) or current_name != segment_name:
+            segments.append(EventSegment(segment_name, segment_start, previous_date))
+            segment_start, segment_name = current_date, current_name
+        previous_date = current_date
+    segments.append(EventSegment(segment_name, segment_start, previous_date))
+    return tuple(segments)
+
+
+def validate_phase_assignments(
+    assignments: Iterable[tuple[date, str]],
+) -> tuple[str, ...]:
+    """Require complete known phases and exactly one reviewed peak day."""
+
+    rows = list(assignments)
+    errors: list[str] = []
+    if any(phase not in EVENT_PHASES for _, phase in rows):
+        errors.append("Every day needs a recognized phase classification.")
+    if sum(phase == "Peak" for _, phase in rows) != 1:
+        errors.append("Choose exactly one peak day for this occurrence.")
+    if len({day for day, _ in rows}) != len(rows):
+        errors.append("Each event day can appear only once.")
+    return tuple(errors)
+
+
 def events_in_window(
     events,
     *,

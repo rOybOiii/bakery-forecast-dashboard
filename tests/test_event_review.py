@@ -8,6 +8,8 @@ from event_review import (
     default_annotation,
     events_in_window,
     family_summary,
+    segments_from_phase_assignments,
+    validate_phase_assignments,
     validate_segments,
 )
 
@@ -89,3 +91,28 @@ def test_event_occurrences_are_scoped_to_overlapping_timeline():
     )
 
     assert visible["disturbance_id"].tolist() == ["overlap", "inside"]
+
+
+def test_reviewed_phases_can_end_in_crest_without_a_tail():
+    assignments = (
+        (date(2026, 7, 3), "Peak"),
+        (date(2026, 7, 4), "Crest"),
+        (date(2026, 7, 5), "Crest"),
+    )
+
+    segments = segments_from_phase_assignments(assignments)
+
+    assert not validate_phase_assignments(assignments)
+    assert [segment.name for segment in segments] == ["Peak", "Crest"]
+    assert segments[-1].end_date == date(2026, 7, 5)
+
+
+def test_reviewed_phases_require_one_peak_day():
+    assignments = (
+        (date(2026, 7, 3), "Crest"),
+        (date(2026, 7, 4), "Crest"),
+    )
+
+    assert validate_phase_assignments(assignments) == (
+        "Choose exactly one peak day for this occurrence.",
+    )

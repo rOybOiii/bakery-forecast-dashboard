@@ -14,12 +14,15 @@ from dashboard_data import disturbance_rows, history_rows
 from event_review import (
     DEMO_SPLIT_EVIDENCE,
     DEFAULT_EVENT_METADATA,
+    EVENT_PHASES,
     FAMILY_HISTORY,
     EventSegment,
-    auto_phase_segments,
+    auto_phase_assignments,
     default_annotation,
     events_in_window,
     family_summary,
+    segments_from_phase_assignments,
+    validate_phase_assignments,
 )
 
 
@@ -277,6 +280,146 @@ def _segment_timeline(
     )
 
 
+def _phase_values() -> dict[str, tuple[tuple[date, str], ...]]:
+    return st.session_state.setdefault("event_phase_values", {})
+
+
+def _render_phase_editor(
+    event_id: str,
+    event_start: date,
+    event_end: date,
+    peak_date: date,
+) -> tuple[str, ...]:
+    initial = _phase_values().get(
+        event_id,
+        auto_phase_assignments(event_start, event_end, peak_date=peak_date),
+    )
+    frame = pd.DataFrame(initial, columns=["Date", "Phase"])
+    edited = st.data_editor(
+        frame,
+        hide_index=True,
+        width="stretch",
+        height=min(340, 38 * len(frame) + 38),
+        key=f"event_phase_editor_{event_id}",
+        column_config={
+            "Date": st.column_config.DateColumn("Event day", disabled=True),
+            "Phase": st.column_config.SelectboxColumn(
+                "Phase classification",
+                options=list(EVENT_PHASES),
+                required=True,
+            ),
+        },
+        disabled=["Date"],
+    )
+    assignments = tuple(
+        (pd.Timestamp(row["Date"]).date(), str(row["Phase"]))
+        for row in edited.to_dict("records")
+    )
+    _phase_values()[event_id] = assignments
+    errors = validate_phase_assignments(assignments)
+    _segment_timeline(
+        event_start,
+        event_end,
+        segments_from_phase_assignments(assignments),
+    )
+    for error in errors:
+        st.warning(error, icon=":material/warning:")
+    return errors
+
+
+def _render_split_controls(event_id: str, event_start: date, event_end: date) -> None:
+    if event_start >= event_end:
+        return
+    split = DEMO_SPLIT_EVIDENCE.get(event_id)
+    if split:
+        st.markdown("#### Possible two-event structure")
+        probability_columns = st.columns(2)
+        probability_columns[0].metric(
+            "One event", f"{split.same_event_probability:.0%}"
+        )
+        probability_columns[1].metric(
+            "Two events", f"{split.separate_event_probability:.0%}"
+        )
+        st.caption(
+            "These are demonstration values standing in for ERP's eventual "
+            "same-episode and separate-episode probabilities."
+        )
+
+    midpoint = event_start + timedelta(days=(event_end - event_start).days // 2)
+    if split:
+        gap = (split.right_peak_date - split.left_peak_date).days
+        default_cut = split.left_peak_date + timedelta(days=max(0, gap // 2))
+        default_left_peak = split.left_peak_date
+        default_right_peak = split.right_peak_date
+    else:
+        default_cut = min(midpoint, event_end - timedelta(days=1))
+        default_left_peak = event_start + timedelta(
+            days=(default_cut - event_start).days // 2
+        )
+        right_start = default_cut + timedelta(days=1)
+        default_right_peak = right_start + timedelta(
+            days=(event_end - right_start).days // 2
+        )
+
+    with st.expander("Split this occurrence into two", expanded=False):
+        st.caption(
+            "Choose the boundary and one provisional peak for each resulting occurrence. "
+            "Production ERP evidence will supply these defaults later."
+        )
+        cut = st.date_input(
+            "First occurrence ends",
+            value=default_cut,
+            min_value=event_start,
+            max_value=event_end - timedelta(days=1),
+            key=f"event_split_cut_{event_id}",
+        )
+        peak_columns = st.columns(2)
+        left_peak = peak_columns[0].date_input(
+            "First peak",
+            value=default_left_peak,
+            min_value=event_start,
+            max_value=event_end,
+            key=f"event_split_left_peak_{event_id}",
+        )
+        right_peak = peak_columns[1].date_input(
+            "Second peak",
+            value=default_right_peak,
+            min_value=event_start,
+            max_value=event_end,
+            key=f"event_split_right_peak_{event_id}",
+        )
+        valid = event_start <= left_peak <= cut < right_peak <= event_end
+        if not valid:
+            st.warning(
+                "The first peak must be on or before the boundary, and the second peak must be after it."
+            )
+        st.caption(
+            f"Result: {event_start:%b %-d}–{cut:%b %-d} and "
+            f"{cut + timedelta(days=1):%b %-d}–{event_end:%b %-d}."
+        )
+        if st.button(
+            "Create two occurrences",
+            type="primary",
+            icon=":material/call_split:",
+            use_container_width=True,
+            disabled=not valid,
+            key=f"accept_split_{event_id}",
+        ):
+            _split_decisions()[event_id] = {
+                "left_peak_date": left_peak,
+                "right_peak_date": right_peak,
+                "cut_date": cut,
+                "same_event_probability": (
+                    split.same_event_probability if split else None
+                ),
+                "separate_event_probability": (
+                    split.separate_event_probability if split else None
+                ),
+            }
+            st.session_state.events_workspace_selected = f"{event_id}::a"
+            st.rerun()
+
+
 def _render_occurrence_editor(bundle, event: pd.Series) -> None:
     event_id = str(event["disturbance_id"])
     annotation = _annotation(event)
@@ -310,12 +453,18 @@ def _render_occurrence_editor(bundle, event: pd.Series) -> None:
     )
 
     st.divider()
-    st.markdown("#### Automatically assigned morphology")
+    st.markdown("#### Event morphology")
     st.caption(
-        "ERP selects one peak. Adjacent high-support days form the crest; the remaining supported days become buildup and tail."
+        "The phases begin as automatic classifications. Reviewers can change any day, "
+        "so buildup or tail may be absent and the crest may extend to an event boundary."
     )
-    segments = auto_phase_segments(event_start, event_end, peak_date=peak_date)
-    _segment_timeline(event_start, event_end, segments)
+    phase_errors = _render_phase_editor(
+        event_id,
+        event_start,
+        event_end,
+        peak_date,
+    )
+    st.session_state[f"event_phase_errors_{event_id}"] = phase_errors
 
     if parent_id:
         if st.button(
@@ -327,38 +476,7 @@ def _render_occurrence_editor(bundle, event: pd.Series) -> None:
             st.session_state.events_workspace_selected = parent_id
             st.rerun()
     else:
-        split = DEMO_SPLIT_EVIDENCE.get(event_id)
-        if split:
-            st.markdown("#### Possible two-event structure")
-            probability_columns = st.columns(2)
-            probability_columns[0].metric(
-                "One event", f"{split.same_event_probability:.0%}"
-            )
-            probability_columns[1].metric(
-                "Two events", f"{split.separate_event_probability:.0%}"
-            )
-            st.caption(
-                f"ERP finds distinct peaks around {split.left_peak_date:%b %-d} and "
-                f"{split.right_peak_date:%b %-d}. The separation remains probabilistic."
-            )
-            if st.button(
-                "Accept ERP-recommended split",
-                type="primary",
-                icon=":material/call_split:",
-                use_container_width=True,
-                key=f"accept_split_{event_id}",
-            ):
-                gap = (split.right_peak_date - split.left_peak_date).days
-                cut = split.left_peak_date + timedelta(days=max(0, gap // 2))
-                _split_decisions()[event_id] = {
-                    "left_peak_date": split.left_peak_date,
-                    "right_peak_date": split.right_peak_date,
-                    "cut_date": cut,
-                    "same_event_probability": split.same_event_probability,
-                    "separate_event_probability": split.separate_event_probability,
-                }
-                st.session_state.events_workspace_selected = f"{event_id}::a"
-                st.rerun()
+        _render_split_controls(event_id, event_start, event_end)
 
     st.divider()
     st.markdown("#### Related history")
@@ -468,10 +586,14 @@ def _render_details(event: pd.Series) -> None:
             "The original model boundary and effect remain unchanged. This saves a manager revision over that evidence.",
             icon=":material/shield:",
         )
+        phase_errors = tuple(
+            st.session_state.get(f"event_phase_errors_{event_id}", ())
+        )
         if st.button(
             "Save review",
             type="primary",
             use_container_width=True,
+            disabled=bool(phase_errors),
             key=f"save_event_review_{event_id}",
         ):
             _records()[event_id] = {
@@ -482,6 +604,7 @@ def _render_details(event: pd.Series) -> None:
                 "status": status,
                 "tags": tuple(tags),
                 "notes": notes,
+                "phases": _phase_values().get(event_id, ()),
             }
             st.session_state["event_review_saved_notice"] = True
             st.rerun()
