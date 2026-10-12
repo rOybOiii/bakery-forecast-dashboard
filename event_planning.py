@@ -62,6 +62,24 @@ class EventScenarioResult:
     placement_count: int
 
 
+@dataclass(frozen=True)
+class FamilyOccurrence:
+    label: str
+    daily_effect: tuple[float, ...]
+    context: str
+
+
+@dataclass(frozen=True)
+class EventFamilyAnalysis:
+    template_id: str
+    family_name: str
+    occurrences: tuple[FamilyOccurrence, ...]
+    direction: str
+    evidence_quality: str
+    typical_peak_percent: float
+    corrections: tuple[tuple[str, float], ...]
+
+
 EVENT_CATALOG: tuple[EventTemplate, ...] = (
     EventTemplate(
         template_id="payday-friday",
@@ -146,11 +164,142 @@ EVENT_CATALOG: tuple[EventTemplate, ...] = (
 )
 
 
+FAMILY_ANALYSES: dict[str, EventFamilyAnalysis] = {
+    "payday-friday": EventFamilyAnalysis(
+        template_id="payday-friday",
+        family_name="Payday Friday",
+        occurrences=(
+            FamilyOccurrence("Apr 2026", (0.17, 0.09), "Friday payday"),
+            FamilyOccurrence("Mar 2026", (0.19, 0.11), "Friday payday"),
+            FamilyOccurrence("Feb 2026", (0.16, 0.10), "Friday payday"),
+            FamilyOccurrence("Jan 2026", (0.18, 0.09), "Friday payday"),
+        ),
+        direction="Stable",
+        evidence_quality="Good family evidence",
+        typical_peak_percent=16.5,
+        corrections=(("Recent family direction", 0.8), ("Downtown response", 0.7)),
+    ),
+    "downtown-arts-walk": EventFamilyAnalysis(
+        template_id="downtown-arts-walk",
+        family_name="Downtown Arts Walk",
+        occurrences=(
+            FamilyOccurrence("2025", (0.10, 0.21, 0.14), "Saturday peak"),
+            FamilyOccurrence("2024", (0.09, 0.20, 0.13), "Saturday peak"),
+            FamilyOccurrence("2023", (0.08, 0.18, 0.12), "Friday opening"),
+        ),
+        direction="Strengthening slightly",
+        evidence_quality="Moderate family evidence",
+        typical_peak_percent=20.0,
+        corrections=(("Recent family direction", 1.4), ("Downtown response", 0.6)),
+    ),
+    "fall-break-weekend": EventFamilyAnalysis(
+        template_id="fall-break-weekend",
+        family_name="Fall break weekend",
+        occurrences=(
+            FamilyOccurrence("2025", (0.07, 0.14, 0.11), "Weekend"),
+            FamilyOccurrence("2024", (0.09, 0.16, 0.13), "Weekend"),
+            FamilyOccurrence("Comparable break A", (0.06, 0.13, 0.10), "Category match"),
+            FamilyOccurrence("Comparable break B", (0.08, 0.14, 0.12), "Category match"),
+        ),
+        direction="No reliable trend",
+        evidence_quality="Category-supported estimate",
+        typical_peak_percent=14.0,
+        corrections=(("Calendar alignment", 0.5), ("Downtown response", 0.5)),
+    ),
+    "football-home-game": EventFamilyAnalysis(
+        template_id="football-home-game",
+        family_name="Football home game",
+        occurrences=(
+            FamilyOccurrence("Game 8", (0.18,), "Evening kickoff"),
+            FamilyOccurrence("Game 7", (0.14,), "Afternoon kickoff"),
+            FamilyOccurrence("Game 6", (0.16,), "Evening kickoff"),
+            FamilyOccurrence("Game 5", (0.15,), "Afternoon kickoff"),
+        ),
+        direction="Variable by kickoff",
+        evidence_quality="Good family evidence",
+        typical_peak_percent=15.5,
+        corrections=(("Expected kickoff context", 0.3), ("Downtown response", 0.2)),
+    ),
+    "farmers-market-opening": EventFamilyAnalysis(
+        template_id="farmers-market-opening",
+        family_name="Farmers Market opening",
+        occurrences=(
+            FamilyOccurrence("2025", (0.14, 0.08), "Opening weekend"),
+            FamilyOccurrence("2024", (0.12, 0.08), "Opening weekend"),
+        ),
+        direction="Stable",
+        evidence_quality="Limited family evidence",
+        typical_peak_percent=12.0,
+        corrections=(("Recent family direction", 0.5), ("Downtown response", 0.5)),
+    ),
+    "holiday-rush": EventFamilyAnalysis(
+        template_id="holiday-rush",
+        family_name="Holiday rush",
+        occurrences=(
+            FamilyOccurrence("2025 holiday", (0.07, 0.13, 0.22, 0.14), "Four-day rush"),
+            FamilyOccurrence("2024 holiday", (0.08, 0.15, 0.24, 0.16), "Four-day rush"),
+            FamilyOccurrence("Comparable holiday A", (0.06, 0.12, 0.20, 0.14), "Category match"),
+        ),
+        direction="Stable with a sharp crest",
+        evidence_quality="Moderate family evidence",
+        typical_peak_percent=22.0,
+        corrections=(("Seasonal direction", 0.5), ("Downtown response", 0.5)),
+    ),
+    "promotion-bump": EventFamilyAnalysis(
+        template_id="promotion-bump",
+        family_name="In-store promotion",
+        occurrences=(
+            FamilyOccurrence("Promotion 9", (0.10, 0.18, -0.03), "Weekend"),
+            FamilyOccurrence("Promotion 8", (0.12, 0.20, -0.05), "Weekday"),
+            FamilyOccurrence("Promotion 7", (0.09, 0.17, -0.04), "Weekend"),
+        ),
+        direction="Stable peak · variable tail",
+        evidence_quality="Good family evidence",
+        typical_peak_percent=18.0,
+        corrections=(("Recent family direction", 0.4), ("Downtown response", 0.6)),
+    ),
+}
+
+
 def template_by_id(template_id: str) -> EventTemplate:
     for template in EVENT_CATALOG:
         if template.template_id == template_id:
             return template
     raise KeyError(f"Unknown event template: {template_id}")
+
+
+def family_analysis_by_template(template_id: str) -> EventFamilyAnalysis | None:
+    return FAMILY_ANALYSES.get(template_id)
+
+
+def event_source_effect(
+    template_id: str,
+    *,
+    source: str,
+    duration_days: int,
+    occurrence_label: str | None = None,
+) -> tuple[float, ...]:
+    """Return the selected scenario starting shape without altering history."""
+
+    template = template_by_id(template_id)
+    if source == "Family estimate":
+        return resample_effect(template.daily_effect, duration_days)
+    if source == "Start blank":
+        return tuple(0.0 for _ in range(duration_days))
+    if source != "Prior occurrence":
+        raise ValueError(f"Unknown event shape source: {source}")
+    analysis = family_analysis_by_template(template_id)
+    if analysis is None or not analysis.occurrences:
+        raise ValueError("This event does not have prior family occurrences")
+    selected = next(
+        (
+            occurrence
+            for occurrence in analysis.occurrences
+            if occurrence.label == occurrence_label
+        ),
+        analysis.occurrences[0],
+    )
+    return resample_effect(selected.daily_effect, duration_days)
 
 
 def resample_effect(effect: tuple[float, ...], duration_days: int) -> tuple[float, ...]:

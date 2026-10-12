@@ -3,6 +3,8 @@ from datetime import date
 import pandas as pd
 
 from event_planning import (
+    event_source_effect,
+    family_analysis_by_template,
     make_placement,
     recurring_starts,
     replace_placement,
@@ -102,3 +104,40 @@ def test_replacing_an_edited_shape_preserves_the_timeline_slot():
     ]
     assert updated[0].daily_effect == (0.18, 0.30)
     assert updated[1] == later
+
+
+def test_family_estimate_and_prior_occurrence_are_distinct_starting_shapes():
+    family = event_source_effect(
+        "downtown-arts-walk",
+        source="Family estimate",
+        duration_days=3,
+    )
+    prior = event_source_effect(
+        "downtown-arts-walk",
+        source="Prior occurrence",
+        duration_days=3,
+        occurrence_label="2023",
+    )
+
+    assert family == (0.10, 0.22, 0.14)
+    assert prior == (0.08, 0.18, 0.12)
+    assert max(family) > max(prior)
+
+
+def test_blank_event_source_preserves_requested_duration():
+    blank = event_source_effect(
+        "payday-friday",
+        source="Start blank",
+        duration_days=5,
+    )
+
+    assert blank == (0.0,) * 5
+
+
+def test_family_analysis_exposes_reviewed_history_and_corrections():
+    analysis = family_analysis_by_template("payday-friday")
+
+    assert analysis is not None
+    assert len(analysis.occurrences) == 4
+    assert analysis.corrections
+    assert analysis.direction == "Stable"

@@ -20,8 +20,11 @@ from dashboard_data import (
 )
 from event_planning import (
     EVENT_CATALOG,
+    EventFamilyAnalysis,
     EventPlacement,
     EventScenarioResult,
+    event_source_effect,
+    family_analysis_by_template,
     make_placement,
     placements_equivalent,
     recurring_starts,
@@ -161,6 +164,30 @@ def _event_template_changed() -> None:
     """A direct catalog choice starts a new placement instead of editing one."""
 
     st.session_state.pop("event_editing_placement_id", None)
+
+
+def _clear_event_day_shape(template_id: str) -> None:
+    prefix = f"event_day_{template_id}_"
+    for key in list(st.session_state):
+        if str(key).startswith(prefix):
+            st.session_state.pop(key, None)
+
+
+def _event_shape_source_changed(template_id: str) -> None:
+    """Start the selected source cleanly without stale per-day edits."""
+
+    _clear_event_day_shape(template_id)
+    source = st.session_state.get(
+        f"event_shape_source_{template_id}", "Family estimate"
+    )
+    st.session_state[f"event_edit_shape_{template_id}"] = source == "Start blank"
+
+
+def _reset_event_family_shape(template_id: str) -> None:
+    _clear_event_day_shape(template_id)
+    st.session_state[f"event_shape_source_{template_id}"] = "Family estimate"
+    st.session_state[f"event_magnitude_{template_id}"] = 100
+    st.session_state[f"event_edit_shape_{template_id}"] = False
 
 
 def _apply_pending_event_edit(
@@ -1197,6 +1224,87 @@ def _marketing_drawer(baseline: pd.DataFrame) -> None:
         st.rerun()
 
 
+def _event_family_chart(
+    template_id: str,
+    analysis: EventFamilyAnalysis,
+) -> alt.Chart:
+    template = template_by_id(template_id)
+    occurrence_rows = []
+    for occurrence in analysis.occurrences:
+        for day, value in enumerate(occurrence.daily_effect, start=1):
+            occurrence_rows.append(
+                {
+                    "day": day,
+                    "effect": 100 * value,
+                    "occurrence": occurrence.label,
+                    "context": occurrence.context,
+                }
+            )
+    history = pd.DataFrame(occurrence_rows)
+    recommendation_rows = []
+    for day, value in enumerate(template.daily_effect, start=1):
+        if value >= 0:
+            lower = value * template.uncertainty_low_factor
+            upper = value * template.uncertainty_high_factor
+        else:
+            lower = value * template.uncertainty_high_factor
+            upper = value * template.uncertainty_low_factor
+        recommendation_rows.append(
+            {
+                "day": day,
+                "median": 100 * value,
+                "q05": 100 * lower,
+                "q95": 100 * upper,
+            }
+        )
+    recommendation = pd.DataFrame(recommendation_rows)
+    history_lines = alt.Chart(history).mark_line(
+        color="#9ca59f", opacity=0.48, strokeWidth=1.4, point=True
+    ).encode(
+        x=alt.X("day:O", title="Event day"),
+        y=alt.Y(
+            "effect:Q",
+            title="Incremental sales effect",
+            axis=alt.Axis(format="+.0f"),
+            scale=alt.Scale(zero=True),
+        ),
+        detail="occurrence:N",
+        tooltip=[
+            alt.Tooltip("occurrence:N", title="Prior occurrence"),
+            alt.Tooltip("context:N", title="Context"),
+            alt.Tooltip("day:O", title="Event day"),
+            alt.Tooltip("effect:Q", title="Effect", format="+.1f"),
+        ],
+    )
+    base = alt.Chart(recommendation).encode(x=alt.X("day:O", title="Event day"))
+    band = base.mark_area(color="#2f6b55", opacity=0.15).encode(
+        y=alt.Y("q05:Q", scale=alt.Scale(zero=True)), y2="q95:Q"
+    )
+    median = base.mark_line(
+        color="#2f6b55", strokeWidth=3.5, point=alt.OverlayMarkDef(filled=True, size=55)
+    ).encode(
+        y=alt.Y("median:Q", scale=alt.Scale(zero=True)),
+        tooltip=[
+            alt.Tooltip("day:O", title="Event day"),
+            alt.Tooltip("median:Q", title="Recommended effect", format="+.1f"),
+            alt.Tooltip("q05:Q", title="90% lower", format="+.1f"),
+            alt.Tooltip("q95:Q", title="90% upper", format="+.1f"),
+        ],
+    )
+    zero = alt.Chart(pd.DataFrame({"value": [0]})).mark_rule(
+        color="#9aa39d", strokeDash=[4, 4]
+    ).encode(y="value:Q")
+    return (
+        alt.layer(history_lines, band, zero, median)
+        .properties(height=190)
+        .resolve_scale(y="shared")
+        .configure_view(strokeOpacity=0)
+        .configure_axis(
+            gridColor="#e3ded3", labelColor="#66736c", titleColor="#66736c"
+        )
+    )
+
+
 def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart:
     template = template_by_id(template_id)
     rows = [{"day": 0, "median": 0.0, "q05": 0.0, "q95": 0.0}]
@@ -1412,6 +1520,106 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
             f"{editing_placement.end_date:%b %-d}. Changes below update this event only."
         )
 
+    family_analysis = family_analysis_by_template(template.template_id)
+    shape_source = "Family estimate"
+    prior_occurrence_label: str | None = None
+    if family_analysis is not None:
+        st.markdown("#### Family-based estimate")
+        st.altair_chart(
+            _event_family_chart(template.template_id, family_analysis),
+            width="stretch",
+        )
+        st.caption(
+            "Gray lines are reviewed family occurrences. Dark green is the proposed "
+            "next occurrence; its band is the 90% predictive range."
+        )
+        family_metrics = st.columns(2)
+        family_metrics[0].metric("Reviewed", len(family_analysis.occurrences))
+        family_metrics[1].metric("Expected peak", f"{template.peak_percent:+d}%")
+        st.caption(
+            f"Family direction: **{family_analysis.direction}** · "
+            f"{family_analysis.evidence_quality}"
+        )
+        with st.expander("How the recommendation was adjusted"):
+            correction_rows = [
+                {
+                    "Component": "Typical family peak",
+                    "Peak correction": f"{family_analysis.typical_peak_percent:+.1f}%",
+                }
+            ]
+            correction_rows.extend(
+                {
+                    "Component": label,
+                    "Peak correction": f"{value:+.1f}%",
+                }
+                for label, value in family_analysis.corrections
+            )
+            correction_rows.append(
+                {
+                    "Component": "Recommended peak",
+                    "Peak correction": f"{template.peak_percent:+.1f}%",
+                }
+            )
+            st.dataframe(
+                pd.DataFrame(correction_rows),
+                hide_index=True,
+                width="stretch",
+            )
+            st.caption(
+                f"{family_analysis.evidence_quality}. Ordinary weekday effects remain "
+                "in the baseline; these are incremental event effects."
+            )
+
+        source_key = f"event_shape_source_{template.template_id}"
+        source_defaults = {}
+        if source_key not in st.session_state:
+            source_defaults["default"] = "Family estimate"
+        shape_source = st.segmented_control(
+            "Starting shape",
+            ["Family estimate", "Prior occurrence", "Start blank"],
+            key=source_key,
+            width="stretch",
+            on_change=_event_shape_source_changed,
+            args=(template.template_id,),
+            **source_defaults,
+        ) or "Family estimate"
+        if shape_source == "Prior occurrence":
+            occurrence_options = [
+                occurrence.label for occurrence in family_analysis.occurrences
+            ]
+            prior_key = f"event_prior_occurrence_{template.template_id}"
+            prior_occurrence_label = st.selectbox(
+                "Prior occurrence",
+                occurrence_options,
+                key=prior_key,
+                on_change=_clear_event_day_shape,
+                args=(template.template_id,),
+            )
+            selected_prior = next(
+                occurrence
+                for occurrence in family_analysis.occurrences
+                if occurrence.label == prior_occurrence_label
+            )
+            st.caption(
+                f"Starting from {selected_prior.label} · {selected_prior.context}. "
+                "This remains a new forecast scenario, not a change to history."
+            )
+        elif shape_source == "Start blank":
+            st.info(
+                "The proposed occurrence starts at zero. Set its daily shape below; "
+                "the family evidence remains visible for comparison."
+            )
+        if st.button(
+            "Reset to family estimate",
+            use_container_width=True,
+            on_click=_reset_event_family_shape,
+            args=(template.template_id,),
+            disabled=shape_source == "Family estimate"
+            and not bool(st.session_state.get(f"event_edit_shape_{template.template_id}")),
+            key=f"reset_event_family_{template.template_id}",
+        ):
+            pass
+
     occurrence_key = f"event_occurrence_{template.template_id}"
     occurrence_defaults = {}
     if occurrence_key not in st.session_state:
@@ -1493,21 +1701,30 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
             **magnitude_defaults,
         )
     )
+    starting_effect = event_source_effect(
+        template.template_id,
+        source=shape_source,
+        duration_days=duration,
+        occurrence_label=prior_occurrence_label,
+    )
     suggested_effect = tuple(
-        value * magnitude / 100.0
-        for value in resample_effect(template.daily_effect, duration)
+        value * magnitude / 100.0 for value in starting_effect
     )
     edit_shape_key = f"event_edit_shape_{template.template_id}"
     edit_shape_defaults = {}
     if edit_shape_key not in st.session_state:
         edit_shape_defaults["value"] = False
-    edit_daily = st.toggle(
-        "Edit daily shape",
-        disabled=is_closure,
-        help="Move individual event days without changing the historical event.",
-        key=edit_shape_key,
-        **edit_shape_defaults,
-    )
+    if shape_source == "Start blank" and not is_closure:
+        edit_daily = True
+        st.markdown("**Build the daily shape**")
+    else:
+        edit_daily = st.toggle(
+            "Edit daily shape",
+            disabled=is_closure,
+            help="Move individual event days without changing the historical event.",
+            key=edit_shape_key,
+            **edit_shape_defaults,
+        )
     custom_percent: tuple[float, ...] | None = None
     preview_effect = suggested_effect
     if edit_daily:
@@ -1519,9 +1736,7 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
             )
             day_defaults = {}
             if day_key not in st.session_state:
-                unscaled = resample_effect(template.daily_effect, duration)[
-                    day_index - 1
-                ]
+                unscaled = starting_effect[day_index - 1]
                 day_defaults["value"] = int(round(100 * unscaled))
             day_value = st.slider(
                 f"Day {day_index}",
