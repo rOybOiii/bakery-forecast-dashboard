@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from html import escape
 
@@ -31,7 +31,7 @@ from operational_forecast import render_downtown_dashboard
 
 ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = ROOT / "data" / "dashboard_bundle_v1"
-SERVING_SNAPSHOT = ROOT / "data" / "backend_snapshot_v1" / "snapshot.json"
+SERVING_SNAPSHOT = ROOT / "data" / "backend_snapshot_v2" / "snapshot.json"
 
 
 st.set_page_config(
@@ -279,8 +279,13 @@ with st.sidebar:
         else:
             st.session_state.active_restaurant = requested_restaurant
     restaurant = st.session_state.active_restaurant
+    forecast_through = (
+        pd.Timestamp(date.today() + timedelta(days=14))
+        if restaurant == "downtown"
+        else pd.Timestamp(bundle.manifest["shared_forecast_end"])
+    )
     st.caption(
-        f"Forecast through {pd.Timestamp(bundle.manifest['shared_forecast_end']):%B %-d, %Y}"
+        f"Forecast through {forecast_through:%B %-d, %Y}"
     )
     if restaurant != "downtown":
         st.divider()

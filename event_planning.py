@@ -274,7 +274,7 @@ def _load_backend_family_content() -> None:
     """Add published family estimates without importing Credent model code."""
 
     global EVENT_CATALOG, _BACKEND_SNAPSHOT_MTIME, _BACKEND_TEMPLATE_IDS
-    snapshot = Path(__file__).resolve().parent / "data" / "backend_snapshot_v1" / "snapshot.json"
+    snapshot = Path(__file__).resolve().parent / "data" / "backend_snapshot_v2" / "snapshot.json"
     current_mtime = snapshot.stat().st_mtime_ns if snapshot.is_file() else None
     if current_mtime == _BACKEND_SNAPSHOT_MTIME:
         return

@@ -11,7 +11,7 @@ from typing import Any
 import pandas as pd
 
 
-CONTRACT_VERSION = "credent_backend_snapshot_v1"
+CONTRACT_VERSION = "credent_backend_snapshot_v2"
 
 
 @dataclass(frozen=True)
@@ -43,8 +43,23 @@ class ServingRepository:
         frame["period"] = "forecast_horizon"
         frame["run_id"] = self.model_run_id
         frame["unit"] = vintage["unit"]
+        frame["target_name"] = vintage["target_name"]
+        frame["scale_contract_id"] = vintage["scale_contract_id"]
+        frame["source_target_date"] = frame["target_date"]
         frame["serving_contract"] = CONTRACT_VERSION
         return frame
+
+    def restaurant_scale(self, restaurant_id: str) -> dict[str, Any]:
+        candidates = [
+            item
+            for item in self.payload["restaurant_scales"]
+            if item["restaurant_id"] == restaurant_id
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                f"Expected one published restaurant scale for {restaurant_id}"
+            )
+        return dict(candidates[0])
 
     def event_family_records(self, restaurant_id: str) -> list[dict[str, Any]]:
         families = {
@@ -110,7 +125,12 @@ def overlay_served_forecasts(
     daily: pd.DataFrame,
     repository: ServingRepository,
 ) -> pd.DataFrame:
-    """Replace matching horizon summaries while preserving richer bundle fields."""
+    """Project a native-unit served vintage onto the bundle's display horizon.
+
+    The scientific vintage retains its original dates in source metadata. The
+    synthetic MVP dashboard uses the ordered lead-day posterior on its current
+    planning dates, rather than pretending the archived run was issued today.
+    """
 
     result = daily.copy()
     restaurants = {
@@ -120,15 +140,16 @@ def overlay_served_forecasts(
     }
     for restaurant in restaurants:
         served = repository.forecast_frame(restaurant)
+        scale = repository.restaurant_scale(restaurant)
         for row in served.itertuples(index=False):
             mask = (
                 result["restaurant"].eq(restaurant)
                 & result["period"].eq("forecast_horizon")
-                & result["target_date"].eq(row.target_date)
+                & result["lead_days"].eq(row.lead_days)
             )
             if int(mask.sum()) != 1:
                 raise ValueError(
-                    f"Serving forecast does not align with bundle day {row.target_date:%Y-%m-%d}"
+                    f"Serving forecast does not align with bundle lead day {row.lead_days}"
                 )
             result.loc[mask, ["q05", "median", "q95", "lead_days", "run_id"]] = [
                 row.q05,
@@ -137,5 +158,9 @@ def overlay_served_forecasts(
                 row.lead_days,
                 row.run_id,
             ]
-            result.loc[mask, "forecast_origin"] = row.forecast_origin
+            result.loc[mask, "source_forecast_origin"] = row.forecast_origin
+            result.loc[mask, "source_target_date"] = row.source_target_date
+            result.loc[mask, "scale_contract_id"] = row.scale_contract_id
+            result.loc[mask, "forecast_unit"] = row.unit
+            result.loc[mask, "scale_derivation"] = scale["derivation"]
     return result

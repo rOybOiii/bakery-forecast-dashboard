@@ -7,7 +7,7 @@ from serving_repository import load_serving_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SNAPSHOT = ROOT / "data" / "backend_snapshot_v1" / "snapshot.json"
+SNAPSHOT = ROOT / "data" / "backend_snapshot_v2" / "snapshot.json"
 
 
 def test_published_snapshot_serves_forecast_and_family_without_model_imports():
@@ -16,10 +16,13 @@ def test_published_snapshot_serves_forecast_and_family_without_model_imports():
     forecast = repository.forecast_frame("downtown")
     families = repository.event_family_records("downtown")
 
-    assert repository.model_run_id == "closed-loop-week16-serving-v1"
+    assert repository.model_run_id == "closed-loop-week16-serving-v2"
     assert len(forecast) == 14
     assert forecast["unit"].eq("standardized_sales").all()
-    assert forecast["serving_contract"].eq("credent_backend_snapshot_v1").all()
+    assert forecast["median"].iloc[0] == pytest.approx(-0.3819223377630662)
+    assert forecast["serving_contract"].eq("credent_backend_snapshot_v2").all()
+    with pytest.raises(ValueError, match="restaurant scale"):
+        repository.restaurant_scale("downtown")
     assert len(families) == 1
     assert len(families[0]["occurrences"]) == 5
     assert max(

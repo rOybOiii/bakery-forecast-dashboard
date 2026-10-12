@@ -55,12 +55,20 @@ def load_bundle(
     if serving_snapshot_path is not None:
         repository = load_serving_repository(serving_snapshot_path)
         daily = overlay_served_forecasts(daily, repository)
+        scaled_restaurants = {
+            item["restaurant_id"]
+            for item in repository.payload["restaurant_scales"]
+        }
         manifest = {
             **manifest,
             "serving_snapshot": {
                 "contract_version": repository.payload["contract_version"],
                 "model_run_id": repository.model_run_id,
                 "published_at": repository.payload["published_run"]["published_at"],
+                "restaurant_scales": {
+                    restaurant: repository.restaurant_scale(restaurant)
+                    for restaurant in scaled_restaurants
+                },
             },
         }
     replay = pd.read_csv(

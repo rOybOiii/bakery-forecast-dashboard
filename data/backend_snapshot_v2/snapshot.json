@@ -1,15 +1,15 @@
 {
-  "contract_version": "credent_backend_snapshot_v1",
+  "contract_version": "credent_backend_snapshot_v2",
   "published_run": {
-    "model_run_id": "closed-loop-week16-serving-v1",
+    "model_run_id": "closed-loop-week16-serving-v2",
     "as_of": "2026-05-20T23:59:59+00:00",
-    "published_at": "2026-10-12T02:46:37.780356+00:00",
+    "published_at": "2026-10-12T04:04:44.815194+00:00",
     "status": "published",
     "synthetic": true,
     "model_versions": {
       "forecasts": "0.4.0",
       "erp": "0.4.0",
-      "serving": "0.1.0",
+      "serving": "0.2.0",
       "event_gate": "qualification_pooled_jeam_path_existence_v1"
     },
     "artifact_ids": [
@@ -33,14 +33,18 @@
       "sha256": "09ca6a7ec33a0de34d981a51afcdc660848744387ae858f0ecd98e41987eba5b"
     }
   ],
+  "restaurant_scales": [],
   "forecast_vintages": [
     {
-      "forecast_vintage_id": "downtown:2026-05-20:closed-loop-week16-serving-v1",
+      "forecast_vintage_id": "downtown:2026-05-20:closed-loop-week16-serving-v2",
       "restaurant_id": "downtown",
-      "model_run_id": "closed-loop-week16-serving-v1",
+      "model_run_id": "closed-loop-week16-serving-v2",
       "forecast_origin": "2026-05-20",
       "horizon_days": 14,
+      "target_name": "organic_daily_sales",
       "unit": "standardized_sales",
+      "scale_contract_id": null,
+      "scale_round_trip_max_error": null,
       "points": [
         {
           "target_date": "2026-05-21",
@@ -250,16 +254,16 @@
   ],
   "family_estimates": [
     {
-      "estimate_id": "erp-positive-pulse-demo:downtown:closed-loop-week16-serving-v1:r1",
+      "estimate_id": "erp-positive-pulse-demo:downtown:closed-loop-week16-serving-v2:r1",
       "family_id": "erp-positive-pulse-demo",
       "restaurant_id": "downtown",
-      "model_run_id": "closed-loop-week16-serving-v1",
+      "model_run_id": "closed-loop-week16-serving-v2",
       "family_revision": 1,
-      "generated_at": "2026-10-12T02:46:37.780356+00:00",
+      "generated_at": "2026-10-12T04:04:44.815194+00:00",
       "status": "published",
       "effect_unit": "fraction_of_organic_baseline",
       "source_effect_unit": "forecast_residual_units",
-      "derivation": "Peak-aligned ERP PIPv4 conditional morphologies, pooled without refitting and scaled to a configured 0.180 scenario peak; magnitude is not learned by this materialization.",
+      "derivation": "Boundary-aligned, duration-resampled ERP PIPv4 conditional morphologies, pooled without refitting and scaled to a configured 0.180 scenario peak; magnitude is not learned by this materialization.",
       "evidence_quality": "Good ERP family evidence",
       "direction": "Stable pooled morphology; scenario magnitude remains configurable",
       "source_occurrence_ids": [

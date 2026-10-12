@@ -74,7 +74,7 @@ def _money(value: float, *, signed: bool = False) -> str:
 
 
 def _shifted_baseline(bundle) -> pd.DataFrame:
-    """Keep the published forecast shape while presenting a current MVP horizon."""
+    """Project the published lead-day posterior onto the current MVP horizon."""
 
     frame = forecast_rows(bundle, RESTAURANT).copy().reset_index(drop=True)
     start = pd.Timestamp(date.today() + timedelta(days=1))
@@ -2087,6 +2087,18 @@ def _render_forecast(bundle) -> None:
         _operational_chart(published, draft=draft, actual_value=actual_value),
         width="stretch",
     )
+    serving = bundle.manifest.get("serving_snapshot", {})
+    scale = serving.get("restaurant_scales", {}).get(RESTAURANT, {})
+    source_origin = pd.to_datetime(
+        baseline.get("source_forecast_origin", pd.Series(dtype="datetime64[ns]"))
+    ).dropna()
+    if scale and not source_origin.empty:
+        st.caption(
+            "Organic line: saved Forecast 2 posterior from "
+            f"{source_origin.iloc[0]:%b %-d, %Y}, projected by forecast lead day "
+            "onto this planning horizon. Dollar values use the exact inverse of "
+            "the Forecast 1 preprocessing recorded with that model vintage."
+        )
 
     marketing_column, event_column = st.columns(2, gap="large")
     with marketing_column:

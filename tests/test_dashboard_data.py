@@ -16,7 +16,7 @@ from dashboard_data import (
 
 
 BUNDLE = Path(__file__).resolve().parents[1] / "data" / "dashboard_bundle_v1"
-SERVING = Path(__file__).resolve().parents[1] / "data" / "backend_snapshot_v1" / "snapshot.json"
+SERVING = Path(__file__).resolve().parents[1] / "data" / "backend_snapshot_v2" / "snapshot.json"
 
 
 def test_public_bundle_loads_and_is_complete():
@@ -33,17 +33,18 @@ def test_public_bundle_loads_and_is_complete():
     assert restaurant_summary(bundle, "all")["forecast_14_day_total"] > 0
 
 
-def test_backend_snapshot_is_registered_without_mixing_standardized_and_dollar_units():
+def test_unscaled_backend_forecast_is_registered_but_cannot_replace_dollars():
     bundle = load_bundle(BUNDLE, serving_snapshot_path=SERVING)
     downtown = forecast_rows(bundle, "downtown")
 
     assert bundle.manifest["serving_snapshot"]["contract_version"] == (
-        "credent_backend_snapshot_v1"
+        "credent_backend_snapshot_v2"
     )
     assert bundle.manifest["serving_snapshot"]["model_run_id"] == (
-        "closed-loop-week16-serving-v1"
+        "closed-loop-week16-serving-v2"
     )
-    assert not downtown["run_id"].eq("closed-loop-week16-serving-v1").any()
+    assert not downtown["run_id"].eq("closed-loop-week16-serving-v2").any()
+    assert bundle.manifest["serving_snapshot"]["restaurant_scales"] == {}
 
 
 def test_disturbance_copy_is_public_safe_and_manager_ready():

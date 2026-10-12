@@ -6,14 +6,17 @@ Credent backend snapshot. It never imports or executes the Forecast, PPRM,
 JEAM, ERP, or MMM inference projects.
 
 The first backend vertical slice is published under
-`data/backend_snapshot_v1/`. It contains a checksum-verified published model
+`data/backend_snapshot_v2/`. It contains a checksum-verified published model
 run, one Forecast 2 vintage, five ERP/PIPv4 event occurrences, and a
 materialized event-family estimate. The estimate is immediately available in
 the event-planning catalog as **ERP positive pulse**; no MCMC runs in Streamlit.
-The coherent Forecast 2 vintage remains in standardized sales units, so it is
-validated and retrievable but does not replace the older dollar-denominated
-demo chart. A later restaurant-scale contract will make that conversion
-explicit instead of silently mixing units.
+The coherent Forecast 2 vintage remains in standardized sales units because
+the residual-only simulation did not pass through Forecast 1's real-sales
+preprocessing. It is validated and retrievable but cannot replace the existing
+dollar-denominated demo chart. Native-dollar publication now requires the exact
+Forecast 1 inverse—its Box-Cox lambda, transformed mean and standard deviation,
+fit cutoff, and source-data hash—and transforms every posterior draw before
+calculating dashboard quantiles.
 
 ## Run locally
 

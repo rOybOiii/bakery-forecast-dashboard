@@ -1,0 +1,12 @@
+{
+  "contract_version": "credent_backend_snapshot_v2",
+  "model_run_id": "closed-loop-week16-serving-v2",
+  "published_at": "2026-10-12T04:04:44.815194+00:00",
+  "snapshot_sha256": "9e1efc02c7c9e7a6f6b2a4051e87cd69c0528ea0cd479876818ad7510be37ae0",
+  "forecast_vintages": 1,
+  "restaurant_scales": 0,
+  "event_occurrences": 5,
+  "event_families": 1,
+  "family_estimates": 1,
+  "status": "valid"
+}
