@@ -103,6 +103,10 @@ def _split_decisions() -> dict[str, dict[str, object]]:
     return st.session_state.setdefault("event_split_decisions", {})
 
 
+def _structure_decisions() -> dict[str, str]:
+    return st.session_state.setdefault("event_structure_decisions", {})
+
+
 def _annotation(event: pd.Series) -> dict[str, object]:
     base = default_annotation(
         str(event["disturbance_id"]),
@@ -141,6 +145,8 @@ def _event_frame(bundle) -> pd.DataFrame:
             child = event.copy()
             child["disturbance_id"] = f"{event_id}::{suffix}"
             child["split_parent_id"] = event_id
+            child["split_parent_start"] = pd.Timestamp(event["start_date"])
+            child["split_parent_end"] = pd.Timestamp(event["end_date"])
             child["erp_peak_date"] = peak
             child["start_date"] = child_start
             child["end_date"] = child_end
@@ -234,8 +240,44 @@ def _evidence_chart(bundle, event: pd.Series) -> alt.Chart:
     actual_points = base.mark_point(
         color="#d96a47", filled=True, size=48
     ).encode(y=alt.Y("actual_sales:Q", scale=alt.Scale(zero=False)))
+    layers: list[alt.Chart] = [band, counterfactual, actual, actual_points]
+    split = DEMO_SPLIT_EVIDENCE.get(str(event["disturbance_id"]))
+    if split:
+        midpoint = split.left_peak_date + timedelta(
+            days=(split.right_peak_date - split.left_peak_date).days // 2
+        )
+        boundary = pd.DataFrame(
+            {
+                "boundary_start": [pd.Timestamp(midpoint) - pd.Timedelta(hours=12)],
+                "boundary_end": [pd.Timestamp(midpoint) + pd.Timedelta(hours=36)],
+            }
+        )
+        boundary_band = alt.Chart(boundary).mark_rect(
+            color="#d7ad45", opacity=0.13
+        ).encode(x="boundary_start:T", x2="boundary_end:T")
+        peaks = pd.DataFrame(
+            {
+                "peak_date": pd.to_datetime(
+                    [split.left_peak_date, split.right_peak_date]
+                ),
+                "candidate": ["Candidate peak A", "Candidate peak B"],
+            }
+        )
+        peak_lines = alt.Chart(peaks).mark_rule(strokeWidth=2).encode(
+            x="peak_date:T",
+            color=alt.Color(
+                "candidate:N",
+                scale=alt.Scale(range=["#2f6b55", "#685b88"]),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip("candidate:N", title="Structure evidence"),
+                alt.Tooltip("peak_date:T", title="Peak date", format="%A, %b %-d"),
+            ],
+        )
+        layers = [boundary_band, *layers, peak_lines]
     return (
-        alt.layer(band, counterfactual, actual, actual_points)
+        alt.layer(*layers)
         .properties(height=300)
         .resolve_scale(y="shared")
         .configure_view(stroke=None)
@@ -273,7 +315,7 @@ def _segment_timeline(
             f'<div class="event-phase-cell {phase_class}"><strong>{current:%b %-d}</strong><span>{label}</span></div>'
         )
     st.markdown(
-        '<div class="event-model-boundary"><span>Original model detection</span>'
+        '<div class="event-model-boundary"><span>Occurrence boundary</span>'
         f'<strong>{event_start:%b %-d}–{event_end:%b %-d}</strong></div>'
         f'<div class="event-phase-grid">{"".join(cells)}</div>',
         unsafe_allow_html=True,
@@ -327,12 +369,21 @@ def _render_phase_editor(
     return errors
 
 
-def _render_split_controls(event_id: str, event_start: date, event_end: date) -> None:
-    if event_start >= event_end:
-        return
+def _render_structure_review(event_id: str, event_start: date, event_end: date) -> bool:
+    """Resolve a possible merged event before allowing phase review."""
+
     split = DEMO_SPLIT_EVIDENCE.get(event_id)
-    if split:
-        st.markdown("#### Possible two-event structure")
+    if not split:
+        return True
+    decision = _structure_decisions().get(event_id)
+    with st.container(border=True):
+        st.markdown('<div class="event-section-kicker">Structure review required</div>', unsafe_allow_html=True)
+        st.markdown("### Is this one event or two?")
+        st.caption(
+            f"Two candidate peaks appear around {split.left_peak_date:%b %-d} and "
+            f"{split.right_peak_date:%b %-d}. The gold area in the evidence chart "
+            "marks the uncertain handoff between them."
+        )
         probability_columns = st.columns(2)
         probability_columns[0].metric(
             "One event", f"{split.same_event_probability:.0%}"
@@ -341,33 +392,51 @@ def _render_split_controls(event_id: str, event_start: date, event_end: date) ->
             "Two events", f"{split.separate_event_probability:.0%}"
         )
         st.caption(
-            "These are demonstration values standing in for ERP's eventual "
+            "Demonstration ERP evidence · production will use saved posterior "
             "same-episode and separate-episode probabilities."
         )
 
-    midpoint = event_start + timedelta(days=(event_end - event_start).days // 2)
-    if split:
+        if decision == "keep":
+            st.success(
+                "This detection is being reviewed as one event.",
+                icon=":material/check_circle:",
+            )
+            if st.button(
+                "Reconsider structure",
+                use_container_width=True,
+                key=f"reconsider_structure_{event_id}",
+            ):
+                _structure_decisions().pop(event_id, None)
+                st.rerun()
+            return True
+
+        if decision != "split":
+            action_columns = st.columns(2)
+            if action_columns[0].button(
+                "Keep as one event",
+                use_container_width=True,
+                key=f"keep_structure_{event_id}",
+            ):
+                _structure_decisions()[event_id] = "keep"
+                st.rerun()
+            if action_columns[1].button(
+                "Split into two events",
+                type="primary",
+                use_container_width=True,
+                key=f"split_structure_{event_id}",
+            ):
+                _structure_decisions()[event_id] = "split"
+                st.rerun()
+            return False
+
         gap = (split.right_peak_date - split.left_peak_date).days
         default_cut = split.left_peak_date + timedelta(days=max(0, gap // 2))
-        default_left_peak = split.left_peak_date
-        default_right_peak = split.right_peak_date
-    else:
-        default_cut = min(midpoint, event_end - timedelta(days=1))
-        default_left_peak = event_start + timedelta(
-            days=(default_cut - event_start).days // 2
-        )
-        right_start = default_cut + timedelta(days=1)
-        default_right_peak = right_start + timedelta(
-            days=(event_end - right_start).days // 2
-        )
-
-    with st.expander("Split this occurrence into two", expanded=False):
+        st.markdown("#### Review the proposed split")
         st.caption(
-            "Choose the boundary and one provisional peak for each resulting occurrence. "
-            "Production ERP evidence will supply these defaults later."
+            "The boundary and peaks begin with the model proposal. Adjust them before creating the two review records."
         )
         cut = st.date_input(
-            "First occurrence ends",
+            "First event ends",
             value=default_cut,
             min_value=event_start,
             max_value=event_end - timedelta(days=1),
@@ -375,15 +444,15 @@ def _render_split_controls(event_id: str, event_start: date, event_end: date) ->
         )
         peak_columns = st.columns(2)
         left_peak = peak_columns[0].date_input(
-            "First peak",
-            value=default_left_peak,
+            "Event A peak",
+            value=split.left_peak_date,
             min_value=event_start,
             max_value=event_end,
             key=f"event_split_left_peak_{event_id}",
         )
         right_peak = peak_columns[1].date_input(
-            "Second peak",
-            value=default_right_peak,
+            "Event B peak",
+            value=split.right_peak_date,
             min_value=event_start,
             max_value=event_end,
             key=f"event_split_right_peak_{event_id}",
@@ -391,14 +460,25 @@ def _render_split_controls(event_id: str, event_start: date, event_end: date) ->
         valid = event_start <= left_peak <= cut < right_peak <= event_end
         if not valid:
             st.warning(
-                "The first peak must be on or before the boundary, and the second peak must be after it."
+                "Event A's peak must be on or before the boundary, and Event B's peak must be after it."
             )
-        st.caption(
-            f"Result: {event_start:%b %-d}–{cut:%b %-d} and "
-            f"{cut + timedelta(days=1):%b %-d}–{event_end:%b %-d}."
+        preview_columns = st.columns(2)
+        preview_columns[0].info(
+            f"**Event A**  \n{event_start:%b %-d}–{cut:%b %-d}  \nPeak {left_peak:%b %-d}"
         )
-        if st.button(
-            "Create two occurrences",
+        preview_columns[1].info(
+            f"**Event B**  \n{cut + timedelta(days=1):%b %-d}–{event_end:%b %-d}  \nPeak {right_peak:%b %-d}"
+        )
+        action_columns = st.columns([1, 2])
+        if action_columns[0].button(
+            "Back",
+            use_container_width=True,
+            key=f"back_structure_{event_id}",
+        ):
+            _structure_decisions().pop(event_id, None)
+            st.rerun()
+        if action_columns[1].button(
+            "Create two events",
             type="primary",
             icon=":material/call_split:",
             use_container_width=True,
@@ -409,18 +489,15 @@ def _render_split_controls(event_id: str, event_start: date, event_end: date) ->
                 "left_peak_date": left_peak,
                 "right_peak_date": right_peak,
                 "cut_date": cut,
-                "same_event_probability": (
-                    split.same_event_probability if split else None
-                ),
-                "separate_event_probability": (
-                    split.separate_event_probability if split else None
-                ),
+                "same_event_probability": split.same_event_probability,
+                "separate_event_probability": split.separate_event_probability,
             }
             st.session_state.events_workspace_selected = f"{event_id}::a"
             st.rerun()
+    return False
 
 
-def _render_occurrence_editor(bundle, event: pd.Series) -> None:
+def _render_occurrence_editor(bundle, event: pd.Series) -> bool:
     event_id = str(event["disturbance_id"])
     annotation = _annotation(event)
     event_start = pd.Timestamp(event["start_date"]).date()
@@ -452,6 +529,11 @@ def _render_occurrence_editor(bundle, event: pd.Series) -> None:
         "Orange is actual sales, dashed green is the no-event counterfactual, and the terracotta band is the model's plausible event contribution."
     )
 
+    if not parent_id and not _render_structure_review(
+        event_id, event_start, event_end
+    ):
+        return False
+
     st.divider()
     st.markdown("#### Event morphology")
     st.caption(
@@ -473,10 +555,9 @@ def _render_occurrence_editor(bundle, event: pd.Series) -> None:
             key=f"undo_split_{event_id}",
         ):
             _split_decisions().pop(parent_id, None)
+            _structure_decisions().pop(parent_id, None)
             st.session_state.events_workspace_selected = parent_id
             st.rerun()
-    else:
-        _render_split_controls(event_id, event_start, event_end)
 
     st.divider()
     st.markdown("#### Related history")
@@ -507,6 +588,7 @@ def _render_occurrence_editor(bundle, event: pd.Series) -> None:
         st.info(
             "Related history appears after this occurrence is named and saved to an event family."
         )
+    return True
 
 
 def _render_details(event: pd.Series) -> None:
@@ -658,7 +740,15 @@ def _render_occurrences(bundle, events: pd.DataFrame) -> None:
         return
     selected_id = st.session_state.get("events_workspace_selected")
     if selected_id not in filtered_ids:
-        selected_id = filtered_ids[0]
+        selected_id = next(
+            (
+                event_id
+                for event_id in filtered_ids
+                if event_id in DEMO_SPLIT_EVIDENCE
+                and event_id not in _structure_decisions()
+            ),
+            filtered_ids[0],
+        )
         st.session_state.events_workspace_selected = selected_id
 
     library_column, evidence_column, details_column = st.columns(
@@ -666,14 +756,23 @@ def _render_occurrences(bundle, events: pd.DataFrame) -> None:
     )
     with library_column:
         st.markdown("#### Event occurrences")
-        st.caption(f"{len(filtered_ids)} detections in this view")
+        st.caption(f"{len(filtered_ids)} review records in this view")
+        previous_parent = ""
         for event_id in filtered_ids:
             event = events.loc[events["disturbance_id"].eq(event_id)].iloc[0]
             annotation = annotations[event_id]
             start = pd.Timestamp(event["start_date"])
             end = pd.Timestamp(event["end_date"])
+            parent_id = str(event.get("split_parent_id") or "")
+            if parent_id and parent_id != previous_parent:
+                parent_start = pd.Timestamp(event.get("split_parent_start"))
+                parent_end = pd.Timestamp(event.get("split_parent_end"))
+                st.markdown(
+                    f"**Split detection**  \n{parent_start:%b %-d}–{parent_end:%b %-d, %Y}"
+                )
+            previous_parent = parent_id
             label = (
-                f"**{annotation['name']}**  \n"
+                f"{'↳ ' if parent_id else ''}**{annotation['name']}**  \n"
                 f"{start:%b %-d}–{end:%b %-d, %Y} · "
                 f"{_signed_percent(float(event['effect_median_percent']))} daily"
             )
@@ -685,15 +784,37 @@ def _render_occurrences(bundle, events: pd.DataFrame) -> None:
             ):
                 st.session_state.events_workspace_selected = event_id
                 st.rerun()
+            review_state = (
+                "Split event"
+                if parent_id
+                else "Structure review needed"
+                if event_id in DEMO_SPLIT_EVIDENCE
+                and event_id not in _structure_decisions()
+                else "Reviewed as one event"
+                if _structure_decisions().get(event_id) == "keep"
+                else str(annotation["status"])
+            )
             st.caption(
-                f"{annotation['category']} · {annotation['status']} · {event['evidence_label']}"
+                f"{annotation['category']} · {review_state} · {event['evidence_label']}"
             )
     selected = events.loc[events["disturbance_id"].eq(selected_id)].iloc[0]
     with evidence_column:
         with st.container(border=True):
-            _render_occurrence_editor(bundle, selected)
+            classification_ready = _render_occurrence_editor(bundle, selected)
     with details_column:
-        _render_details(selected)
+        if classification_ready:
+            _render_details(selected)
+        else:
+            with st.container(border=True):
+                st.markdown(
+                    '<div class="event-section-kicker">Next step</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown("### Resolve event structure")
+                st.caption(
+                    "Choose whether the overlapping peaks represent one event or two. "
+                    "Phase and classification controls will appear after that decision."
+                )
 
 
 def _render_families(events: pd.DataFrame) -> None:
