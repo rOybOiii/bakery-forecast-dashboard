@@ -22,6 +22,8 @@ class EventTemplate:
     evidence: str
     timing_hint: str
     daily_effect: tuple[float, ...]
+    daily_low: tuple[float, ...] | None = None
+    daily_high: tuple[float, ...] | None = None
     uncertainty_low_factor: float = 0.55
     uncertainty_high_factor: float = 1.45
     recommended: bool = False
@@ -296,20 +298,6 @@ def _load_backend_family_content() -> None:
         median = tuple(float(point["median"]) for point in points)
         if not median or max(median, key=abs) == 0:
             continue
-        ratios_low = [
-            float(point["q05"]) / float(point["median"])
-            for point in points
-            if abs(float(point["median"])) > 1e-10
-            and float(point["median"]) > 0
-        ]
-        ratios_high = [
-            float(point["q95"]) / float(point["median"])
-            for point in points
-            if abs(float(point["median"])) > 1e-10
-            and float(point["median"]) > 0
-        ]
-        low_factor = max(0.0, min(ratios_low, default=0.55))
-        high_factor = max(1.0, max(ratios_high, default=1.45))
         additions.append(
             EventTemplate(
                 template_id=family["family_id"],
@@ -322,8 +310,8 @@ def _load_backend_family_content() -> None:
                 ),
                 timing_hint="Materialized backend estimate · no live inference",
                 daily_effect=median,
-                uncertainty_low_factor=low_factor,
-                uncertainty_high_factor=high_factor,
+                daily_low=tuple(float(point["q05"]) for point in points),
+                daily_high=tuple(float(point["q95"]) for point in points),
             )
         )
 
@@ -434,6 +422,40 @@ def resample_effect(effect: tuple[float, ...], duration_days: int) -> tuple[floa
     return tuple(float(value) for value in np.interp(target, source, effect))
 
 
+def event_uncertainty(
+    template: EventTemplate,
+    effect: tuple[float, ...],
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Return daily bounds without converting near-zero days into global ratios."""
+
+    if template.daily_low is None or template.daily_high is None:
+        low: list[float] = []
+        high: list[float] = []
+        for value in effect:
+            if value >= 0:
+                low.append(value * template.uncertainty_low_factor)
+                high.append(value * template.uncertainty_high_factor)
+            else:
+                low.append(value * template.uncertainty_high_factor)
+                high.append(value * template.uncertainty_low_factor)
+        return tuple(low), tuple(high)
+
+    duration = len(effect)
+    baseline = np.asarray(resample_effect(template.daily_effect, duration), dtype=float)
+    baseline_low = np.asarray(resample_effect(template.daily_low, duration), dtype=float)
+    baseline_high = np.asarray(resample_effect(template.daily_high, duration), dtype=float)
+    candidate = np.asarray(effect, dtype=float)
+    baseline_peak = float(np.max(np.abs(baseline)))
+    candidate_peak = float(np.max(np.abs(candidate)))
+    scale = candidate_peak / baseline_peak if baseline_peak > 0 else 1.0
+    lower_width = np.maximum(baseline - baseline_low, 0.0) * scale
+    upper_width = np.maximum(baseline_high - baseline, 0.0) * scale
+    return (
+        tuple(float(value) for value in candidate - lower_width),
+        tuple(float(value) for value in candidate + upper_width),
+    )
+
+
 def make_placement(
     template_id: str,
     *,
@@ -454,15 +476,7 @@ def make_placement(
             raise ValueError("Custom daily shape must match the event duration")
         effect = tuple(float(value) / 100.0 for value in custom_daily_percent)
 
-    low: list[float] = []
-    high: list[float] = []
-    for value in effect:
-        if value >= 0:
-            low.append(value * template.uncertainty_low_factor)
-            high.append(value * template.uncertainty_high_factor)
-        else:
-            low.append(value * template.uncertainty_high_factor)
-            high.append(value * template.uncertainty_low_factor)
+    low, high = event_uncertainty(template, effect)
     return EventPlacement(
         placement_id=placement_id or str(uuid4()),
         template_id=template.template_id,
@@ -471,8 +485,8 @@ def make_placement(
         tags=template.tags,
         start_date=start_date,
         daily_effect=effect,
-        daily_low=tuple(low),
-        daily_high=tuple(high),
+        daily_low=low,
+        daily_high=high,
         evidence=template.evidence,
         occurrence=occurrence,
     )

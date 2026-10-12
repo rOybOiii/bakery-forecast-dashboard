@@ -4,6 +4,7 @@ import pandas as pd
 
 from event_planning import (
     event_source_effect,
+    event_uncertainty,
     family_analysis_by_template,
     make_placement,
     recurring_starts,
@@ -152,3 +153,20 @@ def test_backend_materialized_family_is_available_for_immediate_scenario_use():
     assert analysis is not None
     assert len(analysis.occurrences) == 5
     assert "ERP" in analysis.evidence_quality
+
+
+def test_backend_family_keeps_daily_bounds_instead_of_exploding_global_ratio():
+    template = template_by_id("erp-positive-pulse-demo")
+    low, high = event_uncertainty(template, template.daily_effect)
+    placement = make_placement(
+        "erp-positive-pulse-demo",
+        start_date=date(2026, 10, 11),
+    )
+
+    assert template.daily_low is not None
+    assert template.daily_high is not None
+    assert max(high) < 0.25
+    assert max(placement.daily_high) < 0.25
+    assert all(lower <= median <= upper for lower, median, upper in zip(
+        low, template.daily_effect, high
+    ))

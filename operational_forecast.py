@@ -22,8 +22,9 @@ from event_planning import (
     EventFamilyAnalysis,
     EventPlacement,
     EventScenarioResult,
-    event_source_effect,
     event_catalog,
+    event_source_effect,
+    event_uncertainty,
     family_analysis_by_template,
     make_placement,
     placements_equivalent,
@@ -1242,13 +1243,10 @@ def _event_family_chart(
             )
     history = pd.DataFrame(occurrence_rows)
     recommendation_rows = []
-    for day, value in enumerate(template.daily_effect, start=1):
-        if value >= 0:
-            lower = value * template.uncertainty_low_factor
-            upper = value * template.uncertainty_high_factor
-        else:
-            lower = value * template.uncertainty_high_factor
-            upper = value * template.uncertainty_low_factor
+    lower_effect, upper_effect = event_uncertainty(template, template.daily_effect)
+    for day, (value, lower, upper) in enumerate(
+        zip(template.daily_effect, lower_effect, upper_effect), start=1
+    ):
         recommendation_rows.append(
             {
                 "day": day,
@@ -1264,7 +1262,7 @@ def _event_family_chart(
         x=alt.X("day:O", title="Event day"),
         y=alt.Y(
             "effect:Q",
-            title="Incremental sales effect",
+            title="Incremental sales effect (%)",
             axis=alt.Axis(format="+.0f"),
             scale=alt.Scale(zero=True),
         ),
@@ -1308,13 +1306,10 @@ def _event_family_chart(
 def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart:
     template = template_by_id(template_id)
     rows = [{"day": 0, "median": 0.0, "q05": 0.0, "q95": 0.0}]
-    for day, value in enumerate(effect, start=1):
-        if value >= 0:
-            lower = value * template.uncertainty_low_factor
-            upper = value * template.uncertainty_high_factor
-        else:
-            lower = value * template.uncertainty_high_factor
-            upper = value * template.uncertainty_low_factor
+    lower_effect, upper_effect = event_uncertainty(template, effect)
+    for day, (value, lower, upper) in enumerate(
+        zip(effect, lower_effect, upper_effect), start=1
+    ):
         rows.append(
             {
                 "day": day,
@@ -1342,7 +1337,7 @@ def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart
     band = base.mark_area(color="#d96a47", opacity=0.18).encode(
         y=alt.Y(
             "q05:Q",
-            title="Effect on sales",
+            title="Effect on sales (%)",
             axis=alt.Axis(format="+.0f"),
             scale=alt.Scale(zero=True),
         ),
