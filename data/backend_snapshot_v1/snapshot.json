@@ -1,0 +1,306 @@
+{
+  "contract_version": "credent_backend_snapshot_v1",
+  "published_run": {
+    "model_run_id": "closed-loop-week16-serving-v1",
+    "as_of": "2026-05-20T23:59:59+00:00",
+    "published_at": "2026-10-12T02:46:37.780356+00:00",
+    "status": "published",
+    "synthetic": true,
+    "model_versions": {
+      "forecasts": "0.4.0",
+      "erp": "0.4.0",
+      "serving": "0.1.0",
+      "event_gate": "qualification_pooled_jeam_path_existence_v1"
+    },
+    "artifact_ids": [
+      "forecast-source",
+      "erp-pipv4"
+    ]
+  },
+  "artifacts": [
+    {
+      "artifact_id": "forecast-source",
+      "artifact_type": "forecast_vintage_source",
+      "contract_version": "forecast2_organic_baseline_v1",
+      "uri": "outputs/mmm_closed_loop_final_confirmation_20261007_seed9173/week_16/new_baseline/restaurant_1.forecast2_baseline.npz",
+      "sha256": "8caa4758841025294e1084cc9402d07e1a2167b8e9e132b3c5fc7938bdadff17"
+    },
+    {
+      "artifact_id": "erp-pipv4",
+      "artifact_type": "event_posterior_transport",
+      "contract_version": "PIPv4",
+      "uri": "outputs/mmm_closed_loop_final_confirmation_20261007_seed9173/week_16/detector/erp/world_00/restaurant_1.pipv4.npz",
+      "sha256": "09ca6a7ec33a0de34d981a51afcdc660848744387ae858f0ecd98e41987eba5b"
+    }
+  ],
+  "forecast_vintages": [
+    {
+      "forecast_vintage_id": "downtown:2026-05-20:closed-loop-week16-serving-v1",
+      "restaurant_id": "downtown",
+      "model_run_id": "closed-loop-week16-serving-v1",
+      "forecast_origin": "2026-05-20",
+      "horizon_days": 14,
+      "unit": "standardized_sales",
+      "points": [
+        {
+          "target_date": "2026-05-21",
+          "lead_days": 1,
+          "q05": -0.9840645105614798,
+          "median": -0.3819223377630662,
+          "q95": 0.2545861689316894
+        },
+        {
+          "target_date": "2026-05-22",
+          "lead_days": 2,
+          "q05": -0.6752182823669213,
+          "median": -0.028537292830475618,
+          "q95": 0.6410156701037073
+        },
+        {
+          "target_date": "2026-05-23",
+          "lead_days": 3,
+          "q05": -0.763437423051742,
+          "median": -0.09804224832006292,
+          "q95": 0.5357385373558395
+        },
+        {
+          "target_date": "2026-05-24",
+          "lead_days": 4,
+          "q05": -0.8324119836355233,
+          "median": -0.19114324521980497,
+          "q95": 0.481893029275113
+        },
+        {
+          "target_date": "2026-05-25",
+          "lead_days": 5,
+          "q05": -0.38115044658562425,
+          "median": 0.27670045593765946,
+          "q95": 0.8969246330661244
+        },
+        {
+          "target_date": "2026-05-26",
+          "lead_days": 6,
+          "q05": -0.8379005470818053,
+          "median": -0.18242757532058843,
+          "q95": 0.4583123000317814
+        },
+        {
+          "target_date": "2026-05-27",
+          "lead_days": 7,
+          "q05": -1.022469652014305,
+          "median": -0.3268143034820922,
+          "q95": 0.3058262140093358
+        },
+        {
+          "target_date": "2026-05-28",
+          "lead_days": 8,
+          "q05": -1.1604741829708085,
+          "median": -0.48842566620374483,
+          "q95": 0.1928829570493583
+        },
+        {
+          "target_date": "2026-05-29",
+          "lead_days": 9,
+          "q05": -0.7582029138210179,
+          "median": -0.11124601177087177,
+          "q95": 0.5968655485692816
+        },
+        {
+          "target_date": "2026-05-30",
+          "lead_days": 10,
+          "q05": -0.9098647124067039,
+          "median": -0.1961600468868699,
+          "q95": 0.41331175110935703
+        },
+        {
+          "target_date": "2026-05-31",
+          "lead_days": 11,
+          "q05": -0.9958082953311777,
+          "median": -0.31278097727060883,
+          "q95": 0.3708226602541039
+        },
+        {
+          "target_date": "2026-06-01",
+          "lead_days": 12,
+          "q05": -0.491121103792713,
+          "median": 0.16580947882415586,
+          "q95": 0.91626534567109
+        },
+        {
+          "target_date": "2026-06-02",
+          "lead_days": 13,
+          "q05": -0.9484558330202744,
+          "median": -0.27448088755986566,
+          "q95": 0.4133605888923896
+        },
+        {
+          "target_date": "2026-06-03",
+          "lead_days": 14,
+          "q05": -1.2128236689827023,
+          "median": -0.44072834941237354,
+          "q95": 0.2174981960617477
+        }
+      ]
+    }
+  ],
+  "event_occurrences": [
+    {
+      "occurrence_id": "restaurant_1_0_009",
+      "restaurant_id": "downtown",
+      "source_artifact_id": "erp-pipv4",
+      "start_date": "2026-04-03",
+      "end_date": "2026-04-10",
+      "support_probability": 0.999999,
+      "effect_unit": "forecast_residual_units",
+      "conditional_effect": [
+        0.07831696531542177,
+        1.1529808150005667,
+        0.9356311408546226,
+        1.9618760065668714,
+        2.0132701791030003,
+        0.9338294191617356,
+        0.001587981307540288,
+        0.00016482153737479158
+      ]
+    },
+    {
+      "occurrence_id": "restaurant_1_0_006",
+      "restaurant_id": "downtown",
+      "source_artifact_id": "erp-pipv4",
+      "start_date": "2026-03-09",
+      "end_date": "2026-03-13",
+      "support_probability": 0.9995833333332864,
+      "effect_unit": "forecast_residual_units",
+      "conditional_effect": [
+        0.00014263819260015254,
+        0.11162857658827065,
+        1.5532259923795104,
+        1.7440776970840626,
+        0.013601199424533847
+      ]
+    },
+    {
+      "occurrence_id": "restaurant_1_0_002",
+      "restaurant_id": "downtown",
+      "source_artifact_id": "erp-pipv4",
+      "start_date": "2026-02-10",
+      "end_date": "2026-02-14",
+      "support_probability": 0.9987499999999532,
+      "effect_unit": "forecast_residual_units",
+      "conditional_effect": [
+        0.0075298753794330415,
+        1.7253463104586564,
+        0.13430051879705746,
+        0.0013403571848277264,
+        0.0009142819439439179
+      ]
+    },
+    {
+      "occurrence_id": "restaurant_1_0_008",
+      "restaurant_id": "downtown",
+      "source_artifact_id": "erp-pipv4",
+      "start_date": "2026-03-30",
+      "end_date": "2026-04-03",
+      "support_probability": 0.9937499999999537,
+      "effect_unit": "forecast_residual_units",
+      "conditional_effect": [
+        1.712197932291858,
+        1.7145153835472635,
+        0.005000917483916146,
+        0.0,
+        0.00018620562191381165
+      ]
+    },
+    {
+      "occurrence_id": "restaurant_1_0_005",
+      "restaurant_id": "downtown",
+      "source_artifact_id": "erp-pipv4",
+      "start_date": "2026-03-03",
+      "end_date": "2026-03-06",
+      "support_probability": 0.9933333333332871,
+      "effect_unit": "forecast_residual_units",
+      "conditional_effect": [
+        0.009445034986044059,
+        2.0761371025394175,
+        1.530615238278816,
+        0.0033376946322202605
+      ]
+    }
+  ],
+  "event_families": [
+    {
+      "family_id": "erp-positive-pulse-demo",
+      "name": "ERP positive pulse",
+      "category": "Model-derived demo",
+      "tags": [
+        "erp",
+        "positive",
+        "materialized",
+        "5-day"
+      ],
+      "revision": 1,
+      "occurrence_ids": [
+        "restaurant_1_0_009",
+        "restaurant_1_0_006",
+        "restaurant_1_0_002",
+        "restaurant_1_0_008",
+        "restaurant_1_0_005"
+      ]
+    }
+  ],
+  "family_estimates": [
+    {
+      "estimate_id": "erp-positive-pulse-demo:downtown:closed-loop-week16-serving-v1:r1",
+      "family_id": "erp-positive-pulse-demo",
+      "restaurant_id": "downtown",
+      "model_run_id": "closed-loop-week16-serving-v1",
+      "family_revision": 1,
+      "generated_at": "2026-10-12T02:46:37.780356+00:00",
+      "status": "published",
+      "effect_unit": "fraction_of_organic_baseline",
+      "source_effect_unit": "forecast_residual_units",
+      "derivation": "Peak-aligned ERP PIPv4 conditional morphologies, pooled without refitting and scaled to a configured 0.180 scenario peak; magnitude is not learned by this materialization.",
+      "evidence_quality": "Good ERP family evidence",
+      "direction": "Stable pooled morphology; scenario magnitude remains configurable",
+      "source_occurrence_ids": [
+        "restaurant_1_0_009",
+        "restaurant_1_0_006",
+        "restaurant_1_0_002",
+        "restaurant_1_0_008",
+        "restaurant_1_0_005"
+      ],
+      "points": [
+        {
+          "relative_day": 0,
+          "q05": 0.00019443535768042235,
+          "median": 0.000942735257005332,
+          "q95": 0.16716817000364267
+        },
+        {
+          "relative_day": 1,
+          "q05": 0.03099005135524399,
+          "median": 0.1556544552507381,
+          "q95": 0.20722502858198236
+        },
+        {
+          "relative_day": 2,
+          "q05": 0.003709617732550159,
+          "median": 0.18,
+          "q95": 0.20057377420931807
+        },
+        {
+          "relative_day": 3,
+          "q05": 3.2197078841772246e-05,
+          "median": 0.07212985615771947,
+          "q95": 0.18871292580831234
+        },
+        {
+          "relative_day": 4,
+          "q05": 1.8073158882998813e-05,
+          "median": 0.00010981105695551823,
+          "q95": 0.0013594653317806381
+        }
+      ]
+    }
+  ]
+}

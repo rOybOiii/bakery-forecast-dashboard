@@ -19,11 +19,11 @@ from dashboard_data import (
     recent_rows,
 )
 from event_planning import (
-    EVENT_CATALOG,
     EventFamilyAnalysis,
     EventPlacement,
     EventScenarioResult,
     event_source_effect,
+    event_catalog,
     family_analysis_by_template,
     make_placement,
     placements_equivalent,
@@ -1380,7 +1380,7 @@ def _event_catalog_matches(
 ) -> list:
     query = search.strip().casefold()
     matches = []
-    for template in EVENT_CATALOG:
+    for template in event_catalog():
         haystack = " ".join(
             (
                 template.name,
@@ -1448,7 +1448,7 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
         category: str | None = None
         tags: list[str] = []
         if view == "Browse all":
-            categories = sorted({template.category for template in EVENT_CATALOG})
+            categories = sorted({template.category for template in event_catalog()})
             category = st.pills(
                 "Category",
                 categories,

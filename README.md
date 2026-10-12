@@ -1,8 +1,19 @@
 # Bakery Forecast manager dashboard
 
 A public-safe Streamlit demonstration using four synthetic restaurants. The
-app reads a small, validated dashboard bundle and never imports or executes the
-Forecast, CPD, JEAM, or ERP inference projects.
+app reads a small, validated dashboard bundle plus an optional versioned
+Credent backend snapshot. It never imports or executes the Forecast, PPRM,
+JEAM, ERP, or MMM inference projects.
+
+The first backend vertical slice is published under
+`data/backend_snapshot_v1/`. It contains a checksum-verified published model
+run, one Forecast 2 vintage, five ERP/PIPv4 event occurrences, and a
+materialized event-family estimate. The estimate is immediately available in
+the event-planning catalog as **ERP positive pulse**; no MCMC runs in Streamlit.
+The coherent Forecast 2 vintage remains in standardized sales units, so it is
+validated and retrievable but does not replace the older dollar-denominated
+demo chart. A later restaurant-scale contract will make that conversion
+explicit instead of silently mixing units.
 
 ## Run locally
 

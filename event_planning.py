@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
 import pandas as pd
+
+from serving_repository import load_serving_repository
 
 
 @dataclass(frozen=True)
@@ -261,14 +264,129 @@ FAMILY_ANALYSES: dict[str, EventFamilyAnalysis] = {
 }
 
 
+_BACKEND_SNAPSHOT_MTIME: int | None = None
+_BACKEND_TEMPLATE_IDS: set[str] = set()
+
+
+def _load_backend_family_content() -> None:
+    """Add published family estimates without importing Credent model code."""
+
+    global EVENT_CATALOG, _BACKEND_SNAPSHOT_MTIME, _BACKEND_TEMPLATE_IDS
+    snapshot = Path(__file__).resolve().parent / "data" / "backend_snapshot_v1" / "snapshot.json"
+    current_mtime = snapshot.stat().st_mtime_ns if snapshot.is_file() else None
+    if current_mtime == _BACKEND_SNAPSHOT_MTIME:
+        return
+    EVENT_CATALOG = tuple(
+        template
+        for template in EVENT_CATALOG
+        if template.template_id not in _BACKEND_TEMPLATE_IDS
+    )
+    for template_id in _BACKEND_TEMPLATE_IDS:
+        FAMILY_ANALYSES.pop(template_id, None)
+    _BACKEND_TEMPLATE_IDS = set()
+    _BACKEND_SNAPSHOT_MTIME = current_mtime
+    if not snapshot.is_file():
+        return
+    repository = load_serving_repository(snapshot)
+    additions: list[EventTemplate] = []
+    for record in repository.event_family_records("downtown"):
+        family = record["family"]
+        estimate = record["estimate"]
+        points = estimate["points"]
+        median = tuple(float(point["median"]) for point in points)
+        if not median or max(median, key=abs) == 0:
+            continue
+        ratios_low = [
+            float(point["q05"]) / float(point["median"])
+            for point in points
+            if abs(float(point["median"])) > 1e-10
+            and float(point["median"]) > 0
+        ]
+        ratios_high = [
+            float(point["q95"]) / float(point["median"])
+            for point in points
+            if abs(float(point["median"])) > 1e-10
+            and float(point["median"]) > 0
+        ]
+        low_factor = max(0.0, min(ratios_low, default=0.55))
+        high_factor = max(1.0, max(ratios_high, default=1.45))
+        additions.append(
+            EventTemplate(
+                template_id=family["family_id"],
+                name=family["name"],
+                category=family["category"],
+                tags=tuple(family["tags"]),
+                evidence=(
+                    f"{len(record['occurrences'])} ERP posterior occurrences · "
+                    f"{estimate['evidence_quality']}"
+                ),
+                timing_hint="Materialized backend estimate · no live inference",
+                daily_effect=median,
+                uncertainty_low_factor=low_factor,
+                uncertainty_high_factor=high_factor,
+            )
+        )
+
+        target_duration = len(median)
+        target_peak = max(median)
+        occurrences: list[FamilyOccurrence] = []
+        for occurrence in record["occurrences"]:
+            values = np.asarray(occurrence["conditional_effect"], dtype=float)
+            peak = float(np.max(values))
+            if peak <= 0:
+                continue
+            normalized = values / peak * target_peak
+            if len(normalized) != target_duration:
+                normalized = np.interp(
+                    np.linspace(0.0, 1.0, target_duration),
+                    np.linspace(0.0, 1.0, len(normalized)),
+                    normalized,
+                )
+            occurrences.append(
+                FamilyOccurrence(
+                    label=occurrence["start_date"],
+                    daily_effect=tuple(float(value) for value in normalized),
+                    context=(
+                        f"ERP support {100 * float(occurrence['support_probability']):.0f}%"
+                    ),
+                )
+            )
+        FAMILY_ANALYSES[family["family_id"]] = EventFamilyAnalysis(
+            template_id=family["family_id"],
+            family_name=family["name"],
+            occurrences=tuple(occurrences),
+            direction=estimate["direction"],
+            evidence_quality=estimate["evidence_quality"],
+            typical_peak_percent=100 * target_peak,
+            corrections=(
+                ("ERP pooled morphology", 0.0),
+                ("Configured scenario magnitude", 0.0),
+            ),
+        )
+    existing = {template.template_id for template in EVENT_CATALOG}
+    EVENT_CATALOG = EVENT_CATALOG + tuple(
+        template for template in additions if template.template_id not in existing
+    )
+    _BACKEND_TEMPLATE_IDS = {template.template_id for template in additions}
+
+
+_load_backend_family_content()
+
+
+def event_catalog() -> tuple[EventTemplate, ...]:
+    _load_backend_family_content()
+    return EVENT_CATALOG
+
+
 def template_by_id(template_id: str) -> EventTemplate:
-    for template in EVENT_CATALOG:
+    for template in event_catalog():
         if template.template_id == template_id:
             return template
     raise KeyError(f"Unknown event template: {template_id}")
 
 
 def family_analysis_by_template(template_id: str) -> EventFamilyAnalysis | None:
+    _load_backend_family_content()
     return FAMILY_ANALYSES.get(template_id)
 
 

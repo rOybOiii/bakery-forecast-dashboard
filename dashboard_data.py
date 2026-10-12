@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from serving_repository import load_serving_repository, overlay_served_forecasts
+
 
 RESTAURANT_LABELS = {
     "all": "All restaurants",
@@ -28,7 +30,11 @@ class DashboardBundle:
     validation: dict[str, object]
 
 
-def load_bundle(bundle_dir: str | Path) -> DashboardBundle:
+def load_bundle(
+    bundle_dir: str | Path,
+    *,
+    serving_snapshot_path: str | Path | None = None,
+) -> DashboardBundle:
     """Load only published dashboard artifacts and fail closed on bad data."""
 
     root = Path(bundle_dir)
@@ -46,6 +52,17 @@ def load_bundle(bundle_dir: str | Path) -> DashboardBundle:
         raise ValueError(
             "Daily forecasts do not contain the no-disturbance historical baseline"
         )
+    if serving_snapshot_path is not None:
+        repository = load_serving_repository(serving_snapshot_path)
+        daily = overlay_served_forecasts(daily, repository)
+        manifest = {
+            **manifest,
+            "serving_snapshot": {
+                "contract_version": repository.payload["contract_version"],
+                "model_run_id": repository.model_run_id,
+                "published_at": repository.payload["published_run"]["published_at"],
+            },
+        }
     replay = pd.read_csv(
         root / "forecast_replay.csv",
         parse_dates=["forecast_origin", "target_date"],

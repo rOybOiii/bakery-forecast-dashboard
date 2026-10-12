@@ -31,6 +31,7 @@ from operational_forecast import render_downtown_dashboard
 
 ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = ROOT / "data" / "dashboard_bundle_v1"
+SERVING_SNAPSHOT = ROOT / "data" / "backend_snapshot_v1" / "snapshot.json"
 
 
 st.set_page_config(
@@ -108,11 +109,14 @@ st.markdown(
 
 
 @st.cache_data
-def dashboard_bundle(bundle_version: int):
+def dashboard_bundle(bundle_version: int, serving_version: int):
     """Cache a published bundle, invalidating when validation is republished."""
 
-    del bundle_version
-    return load_bundle(BUNDLE_DIR)
+    del bundle_version, serving_version
+    return load_bundle(
+        BUNDLE_DIR,
+        serving_snapshot_path=SERVING_SNAPSHOT if SERVING_SNAPSHOT.exists() else None,
+    )
 
 
 def money(value: float) -> str:
@@ -240,7 +244,10 @@ def mobile_performance_details(frame: pd.DataFrame, *, selected) -> None:
             )
 
 
-bundle = dashboard_bundle((BUNDLE_DIR / "validation.json").stat().st_mtime_ns)
+bundle = dashboard_bundle(
+    (BUNDLE_DIR / "validation.json").stat().st_mtime_ns,
+    SERVING_SNAPSHOT.stat().st_mtime_ns if SERVING_SNAPSHOT.exists() else 0,
+)
 mobile_request = is_mobile_request()
 
 with st.sidebar:

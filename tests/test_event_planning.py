@@ -10,6 +10,7 @@ from event_planning import (
     replace_placement,
     resample_effect,
     score_event_plan,
+    template_by_id,
 )
 
 
@@ -141,3 +142,13 @@ def test_family_analysis_exposes_reviewed_history_and_corrections():
     assert len(analysis.occurrences) == 4
     assert analysis.corrections
     assert analysis.direction == "Stable"
+
+
+def test_backend_materialized_family_is_available_for_immediate_scenario_use():
+    template = template_by_id("erp-positive-pulse-demo")
+    analysis = family_analysis_by_template("erp-positive-pulse-demo")
+
+    assert template.peak_percent == 18
+    assert analysis is not None
+    assert len(analysis.occurrences) == 5
+    assert "ERP" in analysis.evidence_quality
