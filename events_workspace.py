@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from html import escape
+import re
 
 import altair as alt
 import pandas as pd
@@ -11,13 +12,14 @@ import streamlit as st
 
 from dashboard_data import disturbance_rows, history_rows
 from event_review import (
+    DEMO_SPLIT_EVIDENCE,
     DEFAULT_EVENT_METADATA,
     FAMILY_HISTORY,
     EventSegment,
+    auto_phase_segments,
     default_annotation,
-    default_segments,
+    events_in_window,
     family_summary,
-    validate_segments,
 )
 
 
@@ -47,8 +49,55 @@ KNOWN_TAGS = (
 )
 
 
+def _taxonomy() -> dict[str, dict[str, dict[str, object]]]:
+    families = {
+        str(item.get("family")): {"active": True, "description": ""}
+        for item in DEFAULT_EVENT_METADATA.values()
+        if item.get("family")
+    }
+    categories = {
+        name: {"active": True, "description": ""}
+        for name in CATEGORIES
+        if name != "Unclassified"
+    }
+    tags = {name: {"active": True, "description": ""} for name in KNOWN_TAGS}
+    return st.session_state.setdefault(
+        "event_taxonomy",
+        {"families": families, "categories": categories, "tags": tags},
+    )
+
+
+def _catalog_names(kind: str) -> list[str]:
+    return sorted(
+        name
+        for name, values in _taxonomy()[kind].items()
+        if bool(values.get("active", True))
+    )
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+
+
+def _create_catalog_item(kind: str, name: str, description: str = "") -> bool:
+    clean = " ".join(name.split())
+    if not clean:
+        return False
+    catalog = _taxonomy()[kind]
+    existing = next((item for item in catalog if item.casefold() == clean.casefold()), None)
+    if existing:
+        catalog[existing]["active"] = True
+        return False
+    catalog[clean] = {"active": True, "description": description.strip()}
+    return True
+
+
 def _records() -> dict[str, dict[str, object]]:
     return st.session_state.setdefault("event_review_records", {})
+
+
+def _split_decisions() -> dict[str, dict[str, object]]:
+    return st.session_state.setdefault("event_split_decisions", {})
 
 
 def _annotation(event: pd.Series) -> dict[str, object]:
@@ -61,12 +110,73 @@ def _annotation(event: pd.Series) -> dict[str, object]:
 
 def _event_frame(bundle) -> pd.DataFrame:
     frame = disturbance_rows(bundle, RESTAURANT)
-    return frame.loc[frame["disturbance_type"].eq("event")].copy().reset_index(drop=True)
+    frame = frame.loc[frame["disturbance_type"].eq("event")].copy().reset_index(drop=True)
+    expanded: list[pd.Series] = []
+    for _, event in frame.iterrows():
+        event_id = str(event["disturbance_id"])
+        decision = _split_decisions().get(event_id)
+        if not decision:
+            event["split_parent_id"] = ""
+            event["erp_peak_date"] = pd.NaT
+            expanded.append(event)
+            continue
+        cut = pd.Timestamp(decision["cut_date"])
+        for suffix, child_start, child_end, peak in (
+            (
+                "a",
+                pd.Timestamp(event["start_date"]),
+                cut,
+                pd.Timestamp(decision["left_peak_date"]),
+            ),
+            (
+                "b",
+                cut + pd.Timedelta(days=1),
+                pd.Timestamp(event["end_date"]),
+                pd.Timestamp(decision["right_peak_date"]),
+            ),
+        ):
+            child = event.copy()
+            child["disturbance_id"] = f"{event_id}::{suffix}"
+            child["split_parent_id"] = event_id
+            child["erp_peak_date"] = peak
+            child["start_date"] = child_start
+            child["end_date"] = child_end
+            child["duration_days"] = (child_end - child_start).days + 1
+            expanded.append(child)
+    return pd.DataFrame(expanded).reset_index(drop=True)
 
 
 def _signed_percent(value: float) -> str:
     sign = "+" if value > 0 else "−" if value < 0 else ""
     return f"{sign}{abs(value):.1f}%"
+
+
+def _family_history(family: str) -> tuple[dict[str, object], ...]:
+    aliases = st.session_state.setdefault("event_family_history_aliases", {})
+    source = aliases.get(family, family)
+    return FAMILY_HISTORY.get(source, ())
+
+
+def _rename_catalog_item(kind: str, old_name: str, new_name: str, description: str) -> bool:
+    clean = " ".join(new_name.split())
+    catalog = _taxonomy()[kind]
+    if not clean or (clean != old_name and clean in catalog):
+        return False
+    values = dict(catalog.pop(old_name))
+    values["description"] = description.strip()
+    catalog[clean] = values
+    field = {"families": "family", "categories": "category"}.get(kind)
+    for record in _records().values():
+        if field and record.get(field) == old_name:
+            record[field] = clean
+        elif kind == "tags":
+            record["tags"] = tuple(
+                clean if tag == old_name else tag for tag in record.get("tags", ())
+            )
+    if kind == "families" and clean != old_name:
+        aliases = st.session_state.setdefault("event_family_history_aliases", {})
+        aliases[clean] = aliases.pop(old_name, old_name)
+    return True
 
 
 def _evidence_chart(bundle, event: pd.Series) -> alt.Chart:
@@ -150,6 +260,8 @@ def _segment_timeline(
         phase_class = (
             "peak"
             if matching and "peak" in matching.name.lower()
+            else "crest"
+            if matching and "crest" in matching.name.lower()
             else "tail"
             if matching and "tail" in matching.name.lower()
             else "phase"
@@ -165,33 +277,27 @@ def _segment_timeline(
     )
 
 
-def _segments_from_editor(frame: pd.DataFrame) -> tuple[EventSegment, ...]:
-    segments: list[EventSegment] = []
-    for row in frame.to_dict("records"):
-        if not row.get("Name") or pd.isna(row.get("Start")) or pd.isna(row.get("End")):
-            continue
-        segments.append(
-            EventSegment(
-                name=str(row["Name"]),
-                start_date=pd.Timestamp(row["Start"]).date(),
-                end_date=pd.Timestamp(row["End"]).date(),
-                interpretation=str(row.get("Interpretation") or "Phase"),
-            )
-        )
-    return tuple(segments)
-
-
 def _render_occurrence_editor(bundle, event: pd.Series) -> None:
     event_id = str(event["disturbance_id"])
     annotation = _annotation(event)
     event_start = pd.Timestamp(event["start_date"]).date()
     event_end = pd.Timestamp(event["end_date"]).date()
+    parent_id = str(event.get("split_parent_id") or "")
+    peak_value = event.get("erp_peak_date")
+    peak_date = (
+        pd.Timestamp(peak_value).date()
+        if pd.notna(peak_value)
+        else event_start + timedelta(days=((event_end - event_start).days // 2))
+    )
 
     st.markdown('<div class="event-section-kicker">Selected occurrence</div>', unsafe_allow_html=True)
     title_column, evidence_column = st.columns([3, 1.4])
     with title_column:
         st.markdown(f"### {event_start:%B %-d}–{event_end:%B %-d, %Y}")
-        st.caption(f"One immutable model detection · {int(event['duration_days'])} days")
+        st.caption(
+            f"{'ERP-separated occurrence' if parent_id else 'One immutable model detection'}"
+            f" · {int(event['duration_days'])} days"
+        )
     with evidence_column:
         st.markdown(
             f'<div class="event-evidence-badge">● {escape(str(event["evidence_label"]))}</div>',
@@ -204,97 +310,94 @@ def _render_occurrence_editor(bundle, event: pd.Series) -> None:
     )
 
     st.divider()
-    action_column, note_column = st.columns([1, 2])
-    with action_column:
-        if st.button(
-            "Split into phases",
-            icon=":material/call_split:",
-            use_container_width=True,
-            key=f"split_event_{event_id}",
-        ):
-            st.session_state[f"event_segments_{event_id}"] = default_segments(
-                event_start, event_end
-            )
-            st.rerun()
-    with note_column:
-        st.markdown("**Manager interpretation**")
-        st.caption(
-            "Subdivide the detected island into phases or related events without changing the model evidence."
-        )
-
-    segments = tuple(
-        st.session_state.get(
-            f"event_segments_{event_id}", annotation.get("segments", ())
-        )
+    st.markdown("#### Automatically assigned morphology")
+    st.caption(
+        "ERP selects one peak. Adjacent high-support days form the crest; the remaining supported days become buildup and tail."
     )
+    segments = auto_phase_segments(event_start, event_end, peak_date=peak_date)
     _segment_timeline(event_start, event_end, segments)
-    if segments:
-        editor = pd.DataFrame(
-            [
-                {
-                    "Name": segment.name,
-                    "Start": segment.start_date,
-                    "End": segment.end_date,
-                    "Interpretation": segment.interpretation,
+
+    if parent_id:
+        if st.button(
+            "Restore the original occurrence",
+            icon=":material/undo:",
+            key=f"undo_split_{event_id}",
+        ):
+            _split_decisions().pop(parent_id, None)
+            st.session_state.events_workspace_selected = parent_id
+            st.rerun()
+    else:
+        split = DEMO_SPLIT_EVIDENCE.get(event_id)
+        if split:
+            st.markdown("#### Possible two-event structure")
+            probability_columns = st.columns(2)
+            probability_columns[0].metric(
+                "One event", f"{split.same_event_probability:.0%}"
+            )
+            probability_columns[1].metric(
+                "Two events", f"{split.separate_event_probability:.0%}"
+            )
+            st.caption(
+                f"ERP finds distinct peaks around {split.left_peak_date:%b %-d} and "
+                f"{split.right_peak_date:%b %-d}. The separation remains probabilistic."
+            )
+            if st.button(
+                "Accept ERP-recommended split",
+                type="primary",
+                icon=":material/call_split:",
+                use_container_width=True,
+                key=f"accept_split_{event_id}",
+            ):
+                gap = (split.right_peak_date - split.left_peak_date).days
+                cut = split.left_peak_date + timedelta(days=max(0, gap // 2))
+                _split_decisions()[event_id] = {
+                    "left_peak_date": split.left_peak_date,
+                    "right_peak_date": split.right_peak_date,
+                    "cut_date": cut,
+                    "same_event_probability": split.same_event_probability,
+                    "separate_event_probability": split.separate_event_probability,
                 }
-                for segment in segments
-            ]
-        )
-        edited = st.data_editor(
-            editor,
-            hide_index=True,
-            num_rows="dynamic",
-            width="stretch",
-            key=f"event_segment_editor_{event_id}",
-            column_config={
-                "Name": st.column_config.TextColumn("Segment or event name", required=True),
-                "Start": st.column_config.DateColumn(
-                    "Start", min_value=event_start, max_value=event_end, required=True
-                ),
-                "End": st.column_config.DateColumn(
-                    "End", min_value=event_start, max_value=event_end, required=True
-                ),
-                "Interpretation": st.column_config.SelectboxColumn(
-                    "Treat as", options=["Phase", "Related event"], required=True
-                ),
-            },
-        )
-        segments = _segments_from_editor(edited)
-        st.session_state[f"event_segments_{event_id}"] = segments
-        errors = validate_segments(
-            segments,
-            event_start=event_start,
-            event_end=event_end,
-        )
-        for error in errors:
-            st.error(error)
+                st.session_state.events_workspace_selected = f"{event_id}::a"
+                st.rerun()
 
     st.divider()
     st.markdown("#### Related history")
     family = str(annotation["family"])
-    prior = FAMILY_HISTORY.get(family, ())
-    if prior:
-        columns = st.columns(min(3, len(prior) + 1))
-        for column, occurrence in zip(columns, prior):
-            with column.container(border=True):
-                st.caption(str(occurrence["label"]))
-                st.markdown(f"**{_signed_percent(float(occurrence['peak_percent']))} peak**")
-                st.caption(f"{int(occurrence['duration_days'])} days · confirmed")
-        with columns[-1].container(border=True):
-            st.caption("Suggested family")
-            st.markdown(f"**{family}**")
-            st.caption(f"{len(prior)} prior occurrence{'s' if len(prior) != 1 else ''}")
+    prior = _family_history(family) if family != "Unassigned" else ()
+    if prior and annotation["name"] != "Unidentified":
+        columns = st.columns(min(3, len(prior)))
+        for index, (column, occurrence) in enumerate(zip(columns, prior)):
+            with column:
+                if st.button(
+                    f"**{occurrence['label']}**  \n"
+                    f"{_signed_percent(float(occurrence['peak_percent']))} peak · "
+                    f"{int(occurrence['duration_days'])} days",
+                    use_container_width=True,
+                    key=f"related_history_{event_id}_{index}",
+                ):
+                    st.session_state[f"related_history_selected_{event_id}"] = index
+                    st.rerun()
+        selected_history = st.session_state.get(f"related_history_selected_{event_id}")
+        if selected_history is not None and selected_history < len(prior):
+            occurrence = prior[selected_history]
+            st.info(
+                f"Comparing with {occurrence['label']}: "
+                f"{_signed_percent(float(occurrence['peak_percent']))} peak over "
+                f"{int(occurrence['duration_days'])} days."
+            )
     else:
-        st.info("No prior occurrence is linked yet. Save a family to build reusable evidence.")
+        st.info(
+            "Related history appears after this occurrence is named and saved to an event family."
+        )
 
 
 def _render_details(event: pd.Series) -> None:
     event_id = str(event["disturbance_id"])
     annotation = _annotation(event)
     metadata = DEFAULT_EVENT_METADATA.get(event_id, {})
-    families = sorted(
-        {str(item.get("family", "Unassigned")) for item in DEFAULT_EVENT_METADATA.values()}
-        | {str(annotation["family"]), "Unassigned"}
+    families = sorted(set(_catalog_names("families")) | {str(annotation["family"]), "Unassigned"})
+    categories = sorted(
+        set(_catalog_names("categories")) | {str(annotation["category"]), "Unclassified"}
     )
     with st.container(border=True):
         st.markdown('<div class="event-section-kicker">Manager interpretation</div>', unsafe_allow_html=True)
@@ -304,6 +407,9 @@ def _render_details(event: pd.Series) -> None:
             value=str(annotation["name"]),
             key=f"event_name_{event_id}",
         )
+        suggested_name = str(annotation.get("suggested_name", "Unidentified"))
+        if annotation["name"] == "Unidentified" and suggested_name != "Unidentified":
+            st.caption(f"Model-assisted suggestion: {suggested_name}")
         family = st.selectbox(
             "Event family",
             families,
@@ -317,8 +423,8 @@ def _render_details(event: pd.Series) -> None:
             )
         category = st.selectbox(
             "Category",
-            CATEGORIES,
-            index=CATEGORIES.index(str(annotation["category"])),
+            categories,
+            index=categories.index(str(annotation["category"])),
             key=f"event_category_{event_id}",
         )
         status = st.selectbox(
@@ -327,12 +433,31 @@ def _render_details(event: pd.Series) -> None:
             index=STATUSES.index(str(annotation["status"])),
             key=f"event_status_{event_id}",
         )
-        tags = st.multiselect(
-            "Tags",
-            KNOWN_TAGS,
-            default=list(annotation["tags"]),
-            key=f"event_tags_{event_id}",
-        )
+        with st.expander("Create a new tag"):
+            new_tag = st.text_input(
+                "Tag name",
+                placeholder="For example: construction",
+                key=f"new_event_tag_{event_id}",
+            )
+            if st.button(
+                "Create and add tag",
+                key=f"add_event_tag_{event_id}",
+                disabled=not new_tag.strip(),
+            ):
+                clean_tag = _slug(new_tag)
+                _create_catalog_item("tags", clean_tag)
+                selected_tags = list(
+                    st.session_state.get(f"event_tags_{event_id}", annotation["tags"])
+                )
+                if clean_tag and clean_tag not in selected_tags:
+                    selected_tags.append(clean_tag)
+                st.session_state[f"event_tags_{event_id}"] = selected_tags
+        tag_options = sorted(set(_catalog_names("tags")) | set(annotation["tags"]))
+        tag_key = f"event_tags_{event_id}"
+        tag_arguments = {"key": tag_key}
+        if tag_key not in st.session_state:
+            tag_arguments["default"] = list(annotation["tags"])
+        tags = st.multiselect("Tags", tag_options, **tag_arguments)
         notes = st.text_area(
             "Notes",
             value=str(annotation["notes"]),
@@ -343,30 +468,23 @@ def _render_details(event: pd.Series) -> None:
             "The original model boundary and effect remain unchanged. This saves a manager revision over that evidence.",
             icon=":material/shield:",
         )
-        segments = tuple(st.session_state.get(f"event_segments_{event_id}", ()))
-        errors = validate_segments(
-            segments,
-            event_start=pd.Timestamp(event["start_date"]).date(),
-            event_end=pd.Timestamp(event["end_date"]).date(),
-        )
         if st.button(
             "Save review",
             type="primary",
             use_container_width=True,
-            disabled=bool(errors),
             key=f"save_event_review_{event_id}",
         ):
             _records()[event_id] = {
-                "name": name.strip() or str(metadata.get("suggested_name", "Unnamed detection")),
-                "suggested_name": str(metadata.get("suggested_name", "Unnamed detection")),
+                "name": name.strip() or "Unidentified",
+                "suggested_name": str(metadata.get("suggested_name", "Unidentified")),
                 "family": family,
                 "category": category,
                 "status": status,
                 "tags": tuple(tags),
                 "notes": notes,
-                "segments": segments,
             }
-            st.toast("Event review saved for this session.", icon="✅")
+            st.session_state["event_review_saved_notice"] = True
+            st.rerun()
 
 
 def _render_occurrences(bundle, events: pd.DataFrame) -> None:
@@ -386,7 +504,7 @@ def _render_occurrences(bundle, events: pd.DataFrame) -> None:
     )
     category_filter = filter_columns[2].selectbox(
         "Category",
-        ("All categories",) + CATEGORIES,
+        ("All categories", "Unclassified") + tuple(_catalog_names("categories")),
         label_visibility="collapsed",
         key="events_workspace_category_filter",
     )
@@ -507,7 +625,7 @@ def _render_families(events: pd.DataFrame) -> None:
                 "Typical duration", f"{float(summary['typical_duration_days']):.0f} days"
             )
             st.markdown("#### Linked occurrence evidence")
-            rows = grouped[selected_family] + list(FAMILY_HISTORY.get(selected_family, ()))
+            rows = grouped[selected_family] + list(_family_history(selected_family))
             table = pd.DataFrame(rows)
             if "date" in table:
                 table["date"] = pd.to_datetime(table["date"], errors="coerce").dt.strftime("%b %-d, %Y")
@@ -525,6 +643,94 @@ def _render_families(events: pd.DataFrame) -> None:
             if "Duration" in table:
                 table["Duration"] = table["Duration"].map(lambda value: f"{int(value)} days")
             st.dataframe(table, hide_index=True, width="stretch")
+
+
+def _render_taxonomy_group(kind: str, singular: str) -> None:
+    catalog = _taxonomy()[kind]
+    st.markdown(f"### {singular.title()} management")
+    if kind == "tags":
+        st.caption(
+            "Tags are lightweight search labels. Anyone reviewing an occurrence can create one inline."
+        )
+    else:
+        st.caption(
+            f"{singular.title()} changes are deliberate because they alter how occurrences are organized and pooled."
+        )
+
+    with st.form(f"create_{kind}", border=True):
+        new_name = st.text_input(f"New {singular} name")
+        new_description = st.text_input("Description", placeholder="What should this be used for?")
+        submitted = st.form_submit_button(
+            f"Create {singular}", type="primary", use_container_width=True
+        )
+        if submitted:
+            normalized = _slug(new_name) if kind == "tags" else new_name
+            if _create_catalog_item(kind, normalized, new_description):
+                st.session_state[f"taxonomy_selected_{kind}"] = " ".join(normalized.split())
+                st.rerun()
+            else:
+                st.warning(f"Enter a new, unique {singular} name.")
+
+    if not catalog:
+        st.info(f"No {kind} have been created.")
+        return
+    names = sorted(catalog)
+    selected = st.session_state.get(f"taxonomy_selected_{kind}", names[0])
+    if selected not in names:
+        selected = names[0]
+    selected = st.selectbox(
+        f"Select {singular}",
+        names,
+        index=names.index(selected),
+        key=f"taxonomy_picker_{kind}",
+        format_func=lambda name: f"{name}{' · archived' if not catalog[name].get('active', True) else ''}",
+    )
+    current = catalog[selected]
+    edited_name = st.text_input(
+        "Display name",
+        value=selected,
+        key=f"taxonomy_name_{kind}_{selected}",
+    )
+    edited_description = st.text_area(
+        "Description",
+        value=str(current.get("description", "")),
+        key=f"taxonomy_description_{kind}_{selected}",
+        height=90,
+    )
+    action_columns = st.columns(2)
+    if action_columns[0].button(
+        "Save changes",
+        type="primary",
+        use_container_width=True,
+        key=f"save_taxonomy_{kind}_{selected}",
+    ):
+        normalized = _slug(edited_name) if kind == "tags" else edited_name
+        if _rename_catalog_item(kind, selected, normalized, edited_description):
+            st.session_state[f"taxonomy_selected_{kind}"] = " ".join(normalized.split())
+            st.rerun()
+        st.error("That name is empty or already in use.")
+    active = bool(current.get("active", True))
+    if action_columns[1].button(
+        "Archive" if active else "Restore",
+        use_container_width=True,
+        key=f"archive_taxonomy_{kind}_{selected}",
+    ):
+        current["active"] = not active
+        st.rerun()
+
+
+def _render_taxonomy_manager() -> None:
+    st.markdown("## Classification library")
+    st.caption(
+        "Manage the controlled vocabulary used during event review. Archiving preserves existing assignments."
+    )
+    family_tab, category_tab, tag_tab = st.tabs(["Families", "Categories", "Tags"])
+    with family_tab:
+        _render_taxonomy_group("families", "family")
+    with category_tab:
+        _render_taxonomy_group("categories", "category")
+    with tag_tab:
+        _render_taxonomy_group("tags", "tag")
 
 
 def render_events_workspace(bundle) -> None:
@@ -564,6 +770,7 @@ def render_events_workspace(bundle) -> None:
             border-radius: 7px; padding: .45rem; display: flex;
             flex-direction: column; justify-content: center; text-align: center;
         }
+        .event-phase-cell.crest { background: #f5e6bd; color: #846a22; }
         .event-phase-cell.peak { background: #f4d9ce; color: #a84e34; }
         .event-phase-cell.tail { background: #e7e1ee; color: #685b88; }
         .event-phase-cell strong { font-size: .72rem; }
@@ -578,18 +785,61 @@ def render_events_workspace(bundle) -> None:
         '<div class="section-note">Turn model detections into named, classified, reusable event history.</div>',
         unsafe_allow_html=True,
     )
+    if st.session_state.pop("event_review_saved_notice", False):
+        st.toast("Event review saved for this session.", icon="✅")
     events = _event_frame(bundle)
     view = st.segmented_control(
         "Events view",
-        ["Occurrences", "Families"],
+        ["Occurrences", "Families", "Classifications"],
         default="Occurrences",
         label_visibility="collapsed",
         key="events_workspace_view",
     )
-    if view == "Families":
-        _render_families(events)
+    if view == "Classifications":
+        _render_taxonomy_manager()
     else:
-        _render_occurrences(bundle, events)
+        history = history_rows(bundle, RESTAURANT)
+        timeline_min = pd.Timestamp(history["target_date"].min()).date()
+        timeline_max = pd.Timestamp(history["target_date"].max()).date()
+        preset = st.segmented_control(
+            "Timeline",
+            ["Last 30 days", "Last 90 days", "All history", "Custom"],
+            default="Last 30 days",
+            key="events_workspace_timeline_preset",
+        )
+        if preset == "Last 30 days":
+            timeline_start = max(timeline_min, timeline_max - timedelta(days=29))
+            timeline_end = timeline_max
+        elif preset == "Last 90 days":
+            timeline_start = max(timeline_min, timeline_max - timedelta(days=89))
+            timeline_end = timeline_max
+        elif preset == "All history":
+            timeline_start, timeline_end = timeline_min, timeline_max
+        else:
+            chosen = st.date_input(
+                "Visible timeline",
+                value=(max(timeline_min, timeline_max - timedelta(days=29)), timeline_max),
+                min_value=timeline_min,
+                max_value=timeline_max,
+                key="events_workspace_custom_timeline",
+            )
+            if isinstance(chosen, (tuple, list)) and len(chosen) == 2:
+                timeline_start, timeline_end = chosen
+            else:
+                timeline_start = timeline_end = chosen[0] if isinstance(chosen, (tuple, list)) else chosen
+        visible_events = events_in_window(
+            events,
+            start_date=timeline_start,
+            end_date=timeline_end,
+        )
+        st.caption(
+            f"Showing detected occurrences overlapping {timeline_start:%b %-d, %Y}–"
+            f"{timeline_end:%b %-d, %Y}. Family history outside this timeline appears only when reviewing a linked occurrence."
+        )
+        if view == "Families":
+            _render_families(visible_events)
+        else:
+            _render_occurrences(bundle, visible_events)
     st.caption(
         "MVP annotations are retained only for this Streamlit session. Model detections are read-only."
     )

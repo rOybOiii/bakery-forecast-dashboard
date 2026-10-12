@@ -20,6 +20,20 @@ class EventSegment:
         return (self.end_date - self.start_date).days + 1
 
 
+@dataclass(frozen=True)
+class EventSplitEvidence:
+    """Posterior evidence for keeping two peaks together or separating them."""
+
+    left_peak_date: date
+    right_peak_date: date
+    same_event_probability: float
+    separate_event_probability: float
+
+    @property
+    def recommends_split(self) -> bool:
+        return self.separate_event_probability > self.same_event_probability
+
+
 DEFAULT_EVENT_METADATA: dict[str, dict[str, object]] = {
     "downtown_0_020": {
         "suggested_name": "Payday weekend",
@@ -59,6 +73,25 @@ DEFAULT_EVENT_METADATA: dict[str, dict[str, object]] = {
 }
 
 
+# The published demonstration bundle predates the ERP split-evidence contract.
+# These fixtures let the UI exercise that contract without claiming that the
+# values came from a live model run. Production bundles will carry these fields.
+DEMO_SPLIT_EVIDENCE: dict[str, EventSplitEvidence] = {
+    "downtown_0_019": EventSplitEvidence(
+        left_peak_date=date(2025, 2, 14),
+        right_peak_date=date(2025, 2, 18),
+        same_event_probability=0.38,
+        separate_event_probability=0.62,
+    ),
+    "downtown_0_013": EventSplitEvidence(
+        left_peak_date=date(2024, 9, 26),
+        right_peak_date=date(2024, 9, 30),
+        same_event_probability=0.44,
+        separate_event_probability=0.56,
+    ),
+}
+
+
 FAMILY_HISTORY: dict[str, tuple[dict[str, object], ...]] = {
     "Payday weekend": (
         {"label": "Payday weekend · Jan 2025", "peak_percent": 8.4, "duration_days": 3},
@@ -80,41 +113,70 @@ def default_annotation(
     direction: str,
 ) -> dict[str, object]:
     metadata = DEFAULT_EVENT_METADATA.get(disturbance_id, {})
-    suggested_name = str(metadata.get("suggested_name", "Unnamed detection"))
+    suggested_name = str(metadata.get("suggested_name", "Unidentified"))
     return {
-        "name": suggested_name,
+        "name": "Unidentified",
         "suggested_name": suggested_name,
-        "family": str(metadata.get("family", "Unassigned")),
-        "category": str(metadata.get("category", "Unclassified")),
-        "tags": tuple(metadata.get("tags", (f"{direction}-lift",))),
+        "suggested_family": str(metadata.get("family", "Unassigned")),
+        "suggested_category": str(metadata.get("category", "Unclassified")),
+        "family": "Unassigned",
+        "category": "Unclassified",
+        "tags": (f"{direction}-lift",),
         "status": str(metadata.get("status", "Needs review")),
         "notes": "",
-        "segments": (),
     }
 
 
-def default_segments(start_date: date, end_date: date) -> tuple[EventSegment, ...]:
-    """Create contiguous buildup, peak, and tail phases across an event island."""
+def auto_phase_segments(
+    start_date: date,
+    end_date: date,
+    *,
+    peak_date: date | None = None,
+) -> tuple[EventSegment, ...]:
+    """Create automatic buildup, crest, single-peak, and tail phases."""
 
     duration = (end_date - start_date).days + 1
     if duration < 1:
         raise ValueError("Event end date must not precede its start date")
-    if duration == 1:
-        return (EventSegment("Peak", start_date, end_date),)
-    if duration == 2:
-        return (
-            EventSegment("Buildup", start_date, start_date),
-            EventSegment("Peak", end_date, end_date),
-        )
+    peak = peak_date or start_date + timedelta(days=(duration - 1) // 2)
+    if not start_date <= peak <= end_date:
+        raise ValueError("Peak date must fall inside the event")
 
-    edge = max(1, duration // 3)
-    buildup_end = start_date + timedelta(days=edge - 1)
-    tail_start = end_date - timedelta(days=edge - 1)
-    return (
-        EventSegment("Buildup", start_date, buildup_end),
-        EventSegment("Peak", buildup_end + timedelta(days=1), tail_start - timedelta(days=1)),
-        EventSegment("Tail", tail_start, end_date),
-    )
+    phases: list[EventSegment] = []
+    left_crest = peak - timedelta(days=1) if peak > start_date else None
+    right_crest = peak + timedelta(days=1) if peak < end_date else None
+    if left_crest and start_date <= left_crest - timedelta(days=1):
+        phases.append(EventSegment("Buildup", start_date, left_crest - timedelta(days=1)))
+    if left_crest:
+        phases.append(EventSegment("Crest", left_crest, left_crest))
+    phases.append(EventSegment("Peak", peak, peak))
+    if right_crest:
+        phases.append(EventSegment("Crest", right_crest, right_crest))
+    if right_crest and right_crest + timedelta(days=1) <= end_date:
+        phases.append(EventSegment("Tail", right_crest + timedelta(days=1), end_date))
+    return tuple(phases)
+
+
+def default_segments(start_date: date, end_date: date) -> tuple[EventSegment, ...]:
+    """Backward-compatible alias for the automatic phase assignment."""
+
+    return auto_phase_segments(start_date, end_date)
+
+
+def events_in_window(
+    events,
+    *,
+    start_date: date,
+    end_date: date,
+):
+    """Return occurrences overlapping the selected timeline."""
+
+    if start_date > end_date:
+        raise ValueError("Timeline start date must not follow its end date")
+    return events.loc[
+        events["end_date"].dt.date.ge(start_date)
+        & events["start_date"].dt.date.le(end_date)
+    ].copy()
 
 
 def validate_segments(

@@ -1,14 +1,32 @@
 from datetime import date
 
-from event_review import EventSegment, default_segments, family_summary, validate_segments
+import pandas as pd
+
+from event_review import (
+    EventSegment,
+    auto_phase_segments,
+    default_annotation,
+    events_in_window,
+    family_summary,
+    validate_segments,
+)
 
 
 def test_default_segments_cover_long_event_without_overlap():
-    segments = default_segments(date(2026, 7, 3), date(2026, 7, 7))
+    segments = auto_phase_segments(
+        date(2026, 7, 3), date(2026, 7, 7), peak_date=date(2026, 7, 5)
+    )
 
-    assert [segment.name for segment in segments] == ["Buildup", "Peak", "Tail"]
+    assert [segment.name for segment in segments] == [
+        "Buildup",
+        "Crest",
+        "Peak",
+        "Crest",
+        "Tail",
+    ]
     assert segments[0].start_date == date(2026, 7, 3)
     assert segments[-1].end_date == date(2026, 7, 7)
+    assert [segment.duration_days for segment in segments if segment.name == "Peak"] == [1]
     assert not validate_segments(
         segments,
         event_start=date(2026, 7, 3),
@@ -41,3 +59,33 @@ def test_family_summary_keeps_current_and_historical_occurrences():
     assert summary["occurrence_count"] == 3
     assert summary["typical_peak_percent"] == 8.4
     assert summary["typical_duration_days"] == 3
+
+
+def test_unreviewed_detection_is_unidentified_and_unassigned():
+    annotation = default_annotation("downtown_0_020", direction="positive")
+
+    assert annotation["name"] == "Unidentified"
+    assert annotation["family"] == "Unassigned"
+    assert annotation["suggested_name"] == "Payday weekend"
+
+
+def test_event_occurrences_are_scoped_to_overlapping_timeline():
+    events = pd.DataFrame(
+        {
+            "disturbance_id": ["before", "overlap", "inside", "after"],
+            "start_date": pd.to_datetime(
+                ["2025-01-01", "2025-01-08", "2025-01-12", "2025-02-01"]
+            ),
+            "end_date": pd.to_datetime(
+                ["2025-01-04", "2025-01-11", "2025-01-14", "2025-02-03"]
+            ),
+        }
+    )
+
+    visible = events_in_window(
+        events,
+        start_date=date(2025, 1, 10),
+        end_date=date(2025, 1, 20),
+    )
+
+    assert visible["disturbance_id"].tolist() == ["overlap", "inside"]
