@@ -56,6 +56,7 @@ from marketing_planning import (
     score_plan,
     zero_plan,
 )
+from onboarding_workspace import render_onboarding_workspace
 
 
 ROOT = Path(__file__).resolve().parent
@@ -66,6 +67,7 @@ RESTAURANT = "downtown"
 PAGE_FORECAST = "Forecast"
 PAGE_REPLAY = "Forecast replay"
 PAGE_EVENTS = "Events"
+PAGE_SETUP = "Data setup"
 
 
 def _money(value: float, *, signed: bool = False) -> str:
@@ -454,8 +456,8 @@ def _sidebar_navigation() -> str:
         st.markdown("### Workspace")
         requested = st.radio(
             "Workspace",
-            [PAGE_FORECAST, PAGE_EVENTS, PAGE_REPLAY],
-            index=[PAGE_FORECAST, PAGE_EVENTS, PAGE_REPLAY].index(active),
+            [PAGE_FORECAST, PAGE_EVENTS, PAGE_REPLAY, PAGE_SETUP],
+            index=[PAGE_FORECAST, PAGE_EVENTS, PAGE_REPLAY, PAGE_SETUP].index(active),
             label_visibility="collapsed",
             key=f"downtown_nav_picker_{nonce}",
         )
@@ -1944,8 +1946,8 @@ def _event_drawer(baseline: pd.DataFrame) -> None:
         _clear_event_working_draft()
         st.session_state.event_draft_mode = False
         st.rerun()
-def _render_replay(bundle) -> None:
-    st.markdown('<div class="dashboard-kicker">Downtown</div>', unsafe_allow_html=True)
+def _render_replay(bundle, *, site_name: str = "Downtown") -> None:
+    st.markdown(f'<div class="dashboard-kicker">{site_name}</div>', unsafe_allow_html=True)
     st.markdown('<h1 class="operational-title">Forecast replay</h1>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Review exactly what an earlier forecast showed, then compare it with reported sales.</div>',
@@ -1967,7 +1969,7 @@ def _render_replay(bundle) -> None:
     )
 
 
-def _render_forecast(bundle) -> None:
+def _render_forecast(bundle, *, site_name: str = "Downtown") -> None:
     baseline = _shifted_baseline(bundle)
     state = _plan_state()
     published_plan = _published_plan(state, baseline)
@@ -1994,7 +1996,7 @@ def _render_forecast(bundle) -> None:
 
     title_column, mode_column = st.columns([4, 1])
     with title_column:
-        st.markdown('<div class="dashboard-kicker">Downtown</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="dashboard-kicker">{site_name}</div>', unsafe_allow_html=True)
         st.markdown('<h1 class="operational-title">Upcoming forecast</h1>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="section-note">{baseline["target_date"].min():%b %-d}–{baseline["target_date"].max():%b %-d} · 14-day operational view</div>',
@@ -2156,7 +2158,7 @@ def _render_forecast(bundle) -> None:
         _event_drawer(baseline)
 
 
-def render_downtown_dashboard(bundle) -> None:
+def render_downtown_dashboard(bundle, *, site_name: str = "Downtown") -> None:
     _apply_pending_widget_clear()
     st.markdown(
         """
@@ -2242,8 +2244,10 @@ def render_downtown_dashboard(bundle) -> None:
     )
     page = _sidebar_navigation()
     if page == PAGE_REPLAY:
-        _render_replay(bundle)
+        _render_replay(bundle, site_name=site_name)
     elif page == PAGE_EVENTS:
         render_events_workspace(bundle)
+    elif page == PAGE_SETUP:
+        render_onboarding_workspace()
     else:
-        _render_forecast(bundle)
+        _render_forecast(bundle, site_name=site_name)

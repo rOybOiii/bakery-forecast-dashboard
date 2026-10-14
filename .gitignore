@@ -1,4 +1,6 @@
 .venv/
+data/onboarding_uploads/
+.credent-artifacts/
 __pycache__/
 .pytest_cache/
 .playwright-browsers/

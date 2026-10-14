@@ -26,7 +26,16 @@ from dashboard_data import (
     restaurant_summary,
 )
 from history_window_control import history_window_control
+from job_monitoring import render_job_monitoring
+from database_forecast import load_current_site_forecast, render_current_site_forecast
 from operational_forecast import render_downtown_dashboard
+from onboarding_workspace import (
+    render_client_shell,
+    render_data_validity_controls,
+    render_onboarding_workspace,
+    render_run_details,
+    render_site_home,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -244,60 +253,79 @@ def mobile_performance_details(frame: pd.DataFrame, *, selected) -> None:
             )
 
 
+client_site = render_client_shell()
+if client_site is None:
+    st.stop()
+
+if st.session_state.get("show_job_monitoring"):
+    render_job_monitoring(int(client_site["org_id"]))
+    st.stop()
+
+completed_forecast_job = st.session_state.pop("completed_forecast_job", None)
+if completed_forecast_job is not None:
+    st.toast(f"Forecast job #{completed_forecast_job} finished.", icon="✅")
+
+site_id = int(client_site["site_id"])
+dismissed_sites = set(st.session_state.get("onboarding_dismissed_sites", ()))
+context = st.session_state.get("onboarding_context") or {}
+force_wizard = (
+    st.session_state.get("onboarding_force_site") == site_id
+    or context.get("replace_review_id") is not None
+)
+default_wizard = client_site["onboarding_state"] in {"needs_data", "reviewing"} or (
+    client_site["onboarding_state"] == "ready_for_forecast"
+    and client_site.get("draft_review_id") is None
+)
+if force_wizard or (default_wizard and site_id not in dismissed_sites):
+    render_onboarding_workspace(
+        {
+            "org_id": int(client_site["org_id"]),
+            "site_id": int(client_site["site_id"]),
+            "metric_id": int(client_site["metric_id"]),
+            "review_id": client_site.get("review_id"),
+            "approved_review_id": client_site.get("approved_review_id"),
+            "first_import": bool(client_site.get("first_import")),
+            **(
+                {"replace_review_id": context["replace_review_id"]}
+                if context.get("replace_review_id") is not None
+                else {}
+            ),
+        },
+        show_exit=True,
+    )
+    st.stop()
+
+if client_site["onboarding_state"] != "active":
+    render_site_home(client_site)
+    st.stop()
+
+if client_site.get("forecast_run_id") is not None:
+    render_run_details(int(client_site["forecast_run_id"]))
+
+render_data_validity_controls(client_site)
+
+database_forecast = load_current_site_forecast(site_id)
+if database_forecast is not None:
+    render_current_site_forecast(
+        database_forecast,
+        site_name=str(client_site["site_name"]),
+    )
+    st.stop()
+
 bundle = dashboard_bundle(
     (BUNDLE_DIR / "validation.json").stat().st_mtime_ns,
     SERVING_SNAPSHOT.stat().st_mtime_ns if SERVING_SNAPSHOT.exists() else 0,
 )
 mobile_request = is_mobile_request()
 
+restaurant = "downtown"
+selected_label = str(client_site["site_name"])
 with st.sidebar:
-    st.markdown("### Planning view")
-    if "active_restaurant" not in st.session_state:
-        st.session_state.active_restaurant = "all"
-    restaurant_nonce = int(st.session_state.get("restaurant_picker_nonce", 0))
-    selected_label = st.selectbox(
-        "Restaurant",
-        options=list(RESTAURANT_LABELS.values()),
-        index=list(RESTAURANT_LABELS).index(st.session_state.active_restaurant),
-        key=f"restaurant_picker_{restaurant_nonce}",
-    )
-    requested_restaurant = next(
-        key for key, label in RESTAURANT_LABELS.items() if label == selected_label
-    )
-    if requested_restaurant != st.session_state.active_restaurant:
-        if (
-            st.session_state.active_restaurant == "downtown"
-            and (
-                bool(st.session_state.get("marketing_dirty"))
-                or bool(st.session_state.get("event_dirty"))
-            )
-        ):
-            st.session_state.downtown_pending_nav = {
-                "kind": "restaurant",
-                "value": requested_restaurant,
-            }
-        else:
-            st.session_state.active_restaurant = requested_restaurant
-    restaurant = st.session_state.active_restaurant
-    forecast_through = (
-        pd.Timestamp(date.today() + timedelta(days=14))
-        if restaurant == "downtown"
-        else pd.Timestamp(bundle.manifest["shared_forecast_end"])
-    )
-    st.caption(
-        f"Forecast through {forecast_through:%B %-d, %Y}"
-    )
-    if restaurant != "downtown":
-        st.divider()
-        st.markdown("**About this preview**")
-        st.caption(
-            "Synthetic restaurant data is shown here. Forecasting and event analysis "
-            "were completed before the dashboard was published."
-        )
+    forecast_through = pd.Timestamp(date.today() + timedelta(days=14))
+    st.caption(f"Forecast through {forecast_through:%B %-d, %Y}")
 
-if restaurant == "downtown":
-    render_downtown_dashboard(bundle)
-    st.stop()
+render_downtown_dashboard(bundle, site_name=selected_label)
+st.stop()
 
 header, status = st.columns([4, 1])
 with header:
