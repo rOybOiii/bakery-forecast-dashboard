@@ -162,13 +162,18 @@ def render_run_details(run_id: int, *, expanded: bool = False) -> None:
             for item in summary["diagnostics"]
             if item.get("step_id") is not None
         }
+        attempts_by_step: dict[int, list[dict[str, Any]]] = {}
+        for attempt in summary.get("attempts", ()):
+            attempts_by_step.setdefault(int(attempt["step_id"]), []).append(attempt)
         rows = []
         for step in summary["steps"]:
             diagnostic = diagnostics_by_step.get(int(step["id"]))
+            step_attempts = attempts_by_step.get(int(step["id"]), ())
             rows.append(
                 {
                     "Stage": _stage_label(step["stage"]),
                     "Status": str(step["status"]).replace("_", " ").title(),
+                    "Attempts": len(step_attempts) or int(step.get("attempt") or 0),
                     "Elapsed": _elapsed_label(step.get("started_at"), step.get("ended_at")),
                     "Checks": (
                         str(diagnostic["status"]).title()
@@ -183,6 +188,25 @@ def render_run_details(run_id: int, *, expanded: bool = False) -> None:
         for step in summary["steps"]:
             if step.get("error_text"):
                 st.error(f"{_stage_label(step['stage'])}: {step['error_text']}")
+
+        retries = [
+            attempt
+            for attempt in summary.get("attempts", ())
+            if attempt.get("status") == "retrying"
+        ]
+        if retries:
+            st.markdown("**Automatic retries**")
+            for attempt in retries:
+                target = attempt.get("retry_from_step") or attempt["stage"]
+                reason = str(
+                    attempt.get("error_text")
+                    or attempt.get("error_code")
+                    or "the step did not pass"
+                )
+                st.caption(
+                    f"{_stage_label(attempt['stage'])}, attempt {attempt['attempt']}: "
+                    f"{reason}. Resumed from {_stage_label(target)}."
+                )
 
         if summary["diagnostics"]:
             st.markdown("**Diagnostic readouts**")
