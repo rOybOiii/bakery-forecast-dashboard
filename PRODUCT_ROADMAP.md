@@ -215,6 +215,24 @@ Current preferred hosted implementation: Cloudflare R2 through its
 S3-compatible API. The storage interface must remain provider-neutral so the
 provider can be changed without changing model or application logic.
 
+#### Staged artifact finalization and orphan cleanup
+
+- Validate the active stage claim, lease, and cancellation state immediately
+  before accepting an artifact upload.
+- Upload into an attempt-scoped staging namespace rather than directly into
+  permanent artifact storage.
+- Recheck ownership after the upload and verify the expected size and digest
+  before the stage-completion transaction can accept the artifact.
+- Promote staged objects atomically only after the database records the stage
+  completion and accepted artifact lineage.
+- Treat cancellation, lease loss, digest mismatch, or failed completion as an
+  abandoned staged upload that can never become a published artifact.
+- Run an idempotent scheduled sweeper that removes abandoned staged objects
+  after a conservative grace period, while never deleting an active upload or
+  a database-backed accepted artifact.
+- Exercise cancellation-during-upload, worker crash, gateway restart, retry,
+  and cleanup recovery paths before enabling automated deletion.
+
 ### Production readiness gate
 
 Production launch is blocked until durable object storage is installed,
