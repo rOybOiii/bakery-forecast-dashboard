@@ -106,7 +106,7 @@ def _enqueue_fresh_first_forecast(review_id: int) -> int:
         if controller is None:
             raise RuntimeError("The workflow controller is unavailable.")
         run_id, _ = controller.enqueue_active_first_forecast(review_id)
-        repository.link_first_forecast(review_id, run_id)
+        repository.link_first_forecast_rerun(review_id, run_id)
         return int(run_id)
     finally:
         if pipeline is not None:

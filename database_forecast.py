@@ -15,6 +15,7 @@ from database_event_planning import (
 )
 from database_marketing_workspace import render_marketing_plan_drawer
 from gateway_client import active_gateway_scope, application_call
+from onboarding_workspace import _enqueue_fresh_first_forecast
 
 
 def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
@@ -34,6 +35,7 @@ def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
                 text(
                     """
                     SELECT f.*, a.run_id, r.input_artifact_id,
+                        current_review.review_id,
                         m.name AS metric_name,
                         recovery.id AS provenance_recovery_id,
                         recovery.anchor_run_id AS provenance_anchor_run_id,
@@ -43,6 +45,17 @@ def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
                     JOIN artifact a ON a.id = f.artifact_id
                     JOIN model_run r ON r.id = a.run_id
                     JOIN metric m ON m.id = f.metric_id
+                    LEFT JOIN LATERAL (
+                        SELECT review.id AS review_id
+                        FROM data_review review
+                        JOIN dataset ON dataset.id = review.dataset_id
+                        WHERE review.site_id = f.site_id
+                          AND review.metric_id = f.metric_id
+                          AND review.status = 'approved'
+                          AND dataset.validity_status = 'valid'
+                        ORDER BY review.approved_at DESC NULLS LAST, review.id DESC
+                        LIMIT 1
+                    ) current_review ON true
                     LEFT JOIN provenance_change_recovery recovery
                       ON recovery.recovery_run_id = r.id
                     WHERE f.site_id = :site_id
@@ -205,6 +218,37 @@ def render_current_site_forecast(
         f'<div class="dashboard-subtitle">Current published forecast · run #{forecast["run_id"]}</div>',
         unsafe_allow_html=True,
     )
+    with st.expander("Forecast actions", expanded=False):
+        st.caption(
+            "Run the currently active First Forecast workflow again using the "
+            "same approved data. The published forecast remains available while "
+            "the new job runs."
+        )
+        review_id = forecast.get("review_id")
+        if st.button(
+            "Run again with current data",
+            type="primary",
+            use_container_width=True,
+            key=f"rerun_forecast_{forecast['run_id']}",
+            disabled=review_id is None,
+        ):
+            try:
+                scope = active_gateway_scope()
+                if scope is not None:
+                    new_run_id, _created = scope["client"].rerun_first_forecast(
+                        org_id,
+                        int(forecast["site_id"]),
+                        int(forecast["metric_id"]),
+                    )
+                else:
+                    new_run_id = _enqueue_fresh_first_forecast(int(review_id))
+            except Exception as error:
+                st.error(f"A new forecast could not be queued: {error}")
+            else:
+                st.toast(f"Forecast job #{new_run_id} was queued.", icon="✅")
+                st.rerun()
+        if review_id is None:
+            st.info("There is no current approved dataset available to rerun.")
     if forecast.get("provenance_recovery_id") is not None:
         manifest = dict(forecast.get("provenance_recovery_manifest") or {})
         changed_rows = list(manifest.get("changed_rows") or [])
