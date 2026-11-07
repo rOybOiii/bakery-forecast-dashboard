@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from onboarding_workspace import _pipeline_repository
+from gateway_client import GatewayClient
 
 
 _STAGE_LABELS = {
@@ -45,24 +47,36 @@ def _status_label(status: object) -> str:
 
 
 @st.fragment(run_every="2s")
-def render_job_monitoring(org_id: int) -> None:
+def render_job_monitoring(org_id: int, identity: Any | None = None) -> None:
     """Refresh queue and worker state without rerunning the rest of the app."""
 
-    pipeline = _pipeline_repository()
-    if pipeline is None:
-        st.error("The local pipeline service is unavailable.")
-        return
-    try:
-        snapshot = pipeline.monitoring_snapshot(org_id=org_id)
-    except Exception as error:
-        st.error(f"Job monitoring is temporarily unavailable: {error}")
-        return
-    finally:
-        pipeline.close()
+    if identity is not None and identity.gateway_url and identity.gateway_token:
+        try:
+            snapshot = GatewayClient(
+                identity.gateway_url, identity.gateway_token
+            ).job_monitoring(org_id)
+        except Exception as error:
+            st.error(f"Job monitoring is temporarily unavailable: {error}")
+            return
+    else:
+        pipeline = _pipeline_repository()
+        if pipeline is None:
+            st.error("The local pipeline service is unavailable.")
+            return
+        try:
+            snapshot = pipeline.monitoring_snapshot(org_id=org_id)
+            if identity is not None and identity.is_system_admin:
+                snapshot["events"] = pipeline.worker_events(org_id=org_id, limit=100)
+        except Exception as error:
+            st.error(f"Job monitoring is temporarily unavailable: {error}")
+            return
+        finally:
+            pipeline.close()
 
     summary = dict(snapshot["summary"])
     workers = list(snapshot["workers"])
     jobs = list(snapshot["jobs"])
+    events = list(snapshot.get("events") or [])
     healthy_workers = sum(worker["health"] == "healthy" for worker in workers)
     attention = int(summary["failed_jobs"]) + int(summary["expired_leases"])
 
@@ -139,6 +153,99 @@ def render_job_monitoring(org_id: int) -> None:
         width="stretch",
         column_config={"Job": st.column_config.NumberColumn(format="#%d")},
     )
+
+    active_jobs = [
+        job for job in jobs if str(job.get("status")) in {"queued", "running"}
+    ]
+    if active_jobs:
+        with st.expander("Job controls", expanded=False):
+            selected_run = st.selectbox(
+                "Forecast job",
+                options=[int(job["id"]) for job in active_jobs],
+                format_func=lambda run_id: next(
+                    (
+                        f"Job #{run_id} · {job.get('site_name') or 'Unknown site'} · "
+                        f"{_status_label(job.get('status'))}"
+                        for job in active_jobs
+                        if int(job["id"]) == int(run_id)
+                    ),
+                    f"Job #{run_id}",
+                ),
+            )
+            confirmed = st.checkbox(
+                "I understand this cancels the entire forecast job.",
+                key=f"confirm_cancel_job_{selected_run}",
+            )
+            if st.button(
+                "Cancel forecast job",
+                type="primary",
+                disabled=not confirmed,
+                use_container_width=True,
+            ):
+                try:
+                    if (
+                        identity is not None
+                        and identity.gateway_url
+                        and identity.gateway_token
+                    ):
+                        status = GatewayClient(
+                            identity.gateway_url, identity.gateway_token
+                        ).cancel_job(org_id, int(selected_run))
+                    else:
+                        pipeline = _pipeline_repository()
+                        if pipeline is None:
+                            raise RuntimeError(
+                                "The local pipeline service is unavailable."
+                            )
+                        try:
+                            status = pipeline.request_run_cancellation(
+                                int(selected_run), org_id=org_id
+                            )
+                        finally:
+                            pipeline.close()
+                except Exception as error:
+                    st.error(f"The forecast job could not be cancelled: {error}")
+                else:
+                    st.success(
+                        (
+                            "Cancellation requested. The worker will stop at its next "
+                            "lease check."
+                            if status == "cancellation_requested"
+                            else "The queued forecast job was cancelled."
+                        )
+                    )
+                    st.rerun()
+
+    if identity is not None and identity.is_system_admin:
+        st.markdown("## Operational events")
+        st.caption(
+            "Compact worker and supervisor events retained for 30 days. "
+            "Raw model inputs and outputs are not included."
+        )
+        if not events:
+            st.info("No worker events have been recorded for this organization yet.")
+        else:
+            event_rows = []
+            for event in events:
+                detail = event.get("detail") or {}
+                event_rows.append(
+                    {
+                        "Time": _time_label(event.get("occurred_at")),
+                        "Job": int(event["run_id"]),
+                        "Stage": _STAGE_LABELS.get(
+                            str(event.get("stage")), _status_label(event.get("stage"))
+                        ),
+                        "Event": _status_label(event.get("event_type")),
+                        "Worker": event.get("worker_name") or "—",
+                        "Details": json.dumps(detail, sort_keys=True, default=str),
+                    }
+                )
+            st.dataframe(
+                pd.DataFrame(event_rows),
+                hide_index=True,
+                width="stretch",
+                column_config={"Job": st.column_config.NumberColumn(format="#%d")},
+            )
 
 
 __all__ = ["render_job_monitoring"]
