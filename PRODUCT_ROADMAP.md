@@ -32,6 +32,55 @@
 - Show dependency-aware queue messages in Streamlit, including why a job is
   waiting, canceled, or superseded and which replacement job follows it.
 
+### Provenance Change Recovery
+
+Status: the conservative anchored-rebuild path is implemented locally. It uses
+the last successful pre-change run only as an input-scope anchor, layers all
+accepted dataset revisions through the correction, and executes the currently
+active Forecast Refresh contracts. Model-state checkpoint replay remains a
+separate, unimplemented qualification project.
+
+For an enabled MMM program, recovery now performs a fresh full-history Learning
+fit from the reconstructed data and confirmed spend. It does not seed the fit
+with prior MMM parameters or daily score posteriors. An operational program
+keeps the replacement forecast behind the publication barrier until the fresh
+fit, marketing-clean baseline rebuild, and MMM Rescore publish together.
+
+- Start Provenance Reconciliation only when accepted evidence is substantively
+  revised. Identical overlapping uploads are no-ops; appended dates are normal
+  updates, not provenance conflicts.
+- Trace the changed rows through lineage and invalidate only their actual
+  descendants. A corrected marketing-spend value, for example, should not
+  invalidate unrelated event or organic-forecast work.
+- [x] Record a versioned Provenance Reconciliation Manifest with the input-anchor
+  run, anchor dataset, intervening accepted revisions, corrected dates and
+  values, replacement input, invalidation, current-contract recovery run, and
+  visible rebuilt-forecast annotation.
+- [x] Keep the prior published package in history and let the existing
+  publication barrier control when the rebuilt forecast and MMM Rescore become
+  current.
+- [x] When MMM is enabled, bootstrap fresh Learning from the reconstructed
+  history, exclude prior fit and score estimates, rebuild history with the new
+  fit, and publish the new fit, baseline, and Rescore as one recovery package.
+- Define and scientifically qualify an optimized recomputation contract for every model
+  before enabling replay. Candidate policies include checkpointed online PPRM,
+  a bounded JEAM revision window, the Forecaster's configured training window,
+  and an MMM-specific fit and carryover window. These are design candidates,
+  not approved production rules.
+- Preserve the last safe unaffected published package where available while
+  replacements run, and prevent queued or running work with stale lineage from
+  publishing.
+- Reconcile manager-owned events separately from model inference: preserve
+  interpretations, tags, families, and splits when old provenance is retired;
+  reconnect only strong redetections automatically and send ambiguous splits
+  or merges to manager review.
+- Qualify replay against full clean rebuilds, including parameter estimates,
+  event detection, forecast output, uncertainty, and attribution, before any
+  replay path can replace production results.
+- Provide an audit view showing the changed evidence, selected replay boundary,
+  affected descendants, retained results, replacement jobs, and old-to-new
+  provenance links.
+
 ### Cross-run regime ownership and baseline rebasing
 
 - Quantify the risk that repeated Forecast and MMM refits gradually absorb
@@ -114,6 +163,29 @@ are normally shared workflow steps or controller capabilities rather than
 independent job types.
 
 ## Required before production launch
+
+### Identity and tenant authorization
+
+- [x] Add verified OIDC identity synchronization without storing passwords.
+- [x] Enforce system-administrator and organization-administrator boundaries in
+  organization selection and administration.
+- [x] Add audited organization/site naming, administrator invitation and
+  disablement, and per-site advertising-channel controls.
+- [ ] Configure the hosted identity provider, verified-email policy, invitation
+  delivery, and mandatory MFA policy for system administrators.
+- [x] Add the hosted gateway, Auth0 token verification, server-side tenant
+  authorization, audited identity/organization administration, and short-lived
+  job-only worker credentials.
+- [x] Move operational sales history, update/correction submission, Forecast
+  Refresh/Recovery dispatch, remote job claiming, and digest-verified worker
+  artifact delivery behind the gateway. The outbound Mac worker no longer
+  needs database credentials.
+- [x] Move onboarding, Forecast, Events, Marketing, event reconciliation,
+  imputation, family refresh, and job-status reads/actions behind an allowlisted
+  site-scoped gateway API. Hosted Streamlit now runs without a database
+  credential.
+- [ ] Qualify tenant-isolation and disabled-membership tests against the hosted
+  authentication and backend deployment.
 
 ### Durable object storage
 

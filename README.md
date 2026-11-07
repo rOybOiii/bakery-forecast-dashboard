@@ -27,6 +27,42 @@ python -m pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
+Without hosted authentication settings, a local database may use the explicit
+`local-streamlit-manager` development identity. This fallback is refused when
+`CREDENT_ENV=production`.
+
+## Identity and organization access
+
+The manager application uses Streamlit's OpenID Connect boundary. Copy
+`.streamlit/secrets.toml.example` to the untracked `secrets.toml` file and
+configure the client with an OIDC identity provider. The provider owns signup,
+passwords, email verification, sessions, and MFA. Credent stores the verified
+provider subject, customer account, organization memberships, invitations, and
+audit records; it never stores a customer password.
+
+Only two MVP access levels are exposed:
+
+- **System administrator** can service every organization. MFA must be required
+  by the identity-provider policy for this account.
+- **Organization administrator** can access and administer only organizations
+  with an active membership.
+
+Organization administrators can rename the organization and its Sites/Units,
+add or disable administrators, and choose the permitted advertising channels
+for each Site/Unit. A pending invitation is accepted only when the same
+verified email signs in. Disabling preserves the account and audit history.
+
+Credent now includes a hosted gateway boundary. Streamlit sends the provider's
+short-lived ID token to that service; the gateway verifies it, enforces every
+organization/site membership, performs administration, and owns those database
+operations. Sales history, corrections, and forecast/recovery dispatch also use
+that authenticated path. Forecast, Events, Marketing, onboarding, event-family,
+imputation, reconciliation, and monitoring operations use an allowlisted,
+site-scoped application API whose actor identity is derived by the gateway.
+The Mac worker uses outbound requests with short-lived job-only credentials for
+claims and verified artifact transfer. Neither hosted Streamlit nor the worker
+needs a database password.
+
 ## Deploy
 
 1. Push this directory to the root of its own GitHub repository.
@@ -34,8 +70,9 @@ streamlit run streamlit_app.py
    **Yup, I have an app**.
 3. Select that repository, the `main` branch, and `streamlit_app.py` as the
    entrypoint.
-4. In **Advanced settings**, select Python 3.12. This demonstration requires
-   no secrets.
+4. In **Advanced settings**, select Python 3.12 and configure the OIDC settings
+   plus the HTTPS `CREDENT_API_URL`. Do not give hosted Streamlit a database
+   password. Set `CREDENT_ENV=production` in the hosted environment.
 5. Choose an optional `streamlit.app` subdomain and deploy.
 
 Community Cloud installs the pinned packages in `requirements.txt` and reads

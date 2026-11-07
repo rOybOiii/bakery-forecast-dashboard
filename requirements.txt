@@ -1,4 +1,5 @@
 streamlit==1.65.0
+Authlib==1.9.1
 pandas==2.3.3
 altair==5.5.0
 plotly==6.3.0

@@ -28,7 +28,14 @@ from dashboard_data import (
 from history_window_control import history_window_control
 from job_monitoring import render_job_monitoring
 from database_forecast import load_current_site_forecast, render_current_site_forecast
+from database_events_workspace import render_database_events_workspace
+from database_marketing_workspace import render_database_marketing_workspace
 from operational_forecast import render_downtown_dashboard
+from forecast_refresh_workspace import render_forecast_refresh_controls
+from sales_data_workspace import render_sales_data_workspace
+from identity_workspace import render_identity_gate, render_identity_sidebar
+from gateway_client import bind_gateway_scope
+from organization_settings_workspace import render_organization_settings
 from onboarding_workspace import (
     render_client_shell,
     render_data_validity_controls,
@@ -253,12 +260,56 @@ def mobile_performance_details(frame: pd.DataFrame, *, selected) -> None:
             )
 
 
-client_site = render_client_shell()
+identity = render_identity_gate()
+if identity is None:
+    st.stop()
+render_identity_sidebar(identity)
+
+client_site = render_client_shell(identity)
 if client_site is None:
+    st.stop()
+bind_gateway_scope(
+    identity,
+    org_id=int(client_site["org_id"]),
+    site_id=int(client_site["site_id"]),
+    metric_id=int(client_site["metric_id"]),
+)
+
+if st.session_state.get("show_organization_settings"):
+    render_organization_settings(identity, int(client_site["org_id"]))
     st.stop()
 
 if st.session_state.get("show_job_monitoring"):
-    render_job_monitoring(int(client_site["org_id"]))
+    render_job_monitoring(int(client_site["org_id"]), identity=identity)
+    st.stop()
+
+if st.session_state.get("show_sales_data_workspace"):
+    render_sales_data_workspace(
+        site=client_site,
+        site_name=str(client_site["site_name"]),
+        actor_id=identity.account_id,
+        identity=identity,
+    )
+    st.stop()
+
+if st.session_state.get("show_events_workspace"):
+    render_database_events_workspace(
+        org_id=int(client_site["org_id"]),
+        site_id=int(client_site["site_id"]),
+        site_name=str(client_site["site_name"]),
+        actor_id=identity.account_id,
+    )
+    st.stop()
+
+if st.session_state.get("show_marketing_workspace"):
+    render_database_marketing_workspace(
+        org_id=int(client_site["org_id"]),
+        site_id=int(client_site["site_id"]),
+        metric_id=int(client_site["metric_id"]),
+        site_name=str(client_site["site_name"]),
+        actor_id=identity.account_id,
+        can_override=identity.is_system_admin,
+    )
     st.stop()
 
 completed_forecast_job = st.session_state.pop("completed_forecast_job", None)
@@ -282,6 +333,7 @@ if force_wizard or (default_wizard and site_id not in dismissed_sites):
             "org_id": int(client_site["org_id"]),
             "site_id": int(client_site["site_id"]),
             "metric_id": int(client_site["metric_id"]),
+            "actor_id": identity.account_id,
             "review_id": client_site.get("review_id"),
             "approved_review_id": client_site.get("approved_review_id"),
             "first_import": bool(client_site.get("first_import")),
@@ -302,15 +354,28 @@ if client_site["onboarding_state"] != "active":
 if client_site.get("forecast_run_id") is not None:
     render_run_details(int(client_site["forecast_run_id"]))
 
+render_forecast_refresh_controls(
+    client_site,
+    actor_id=identity.account_id,
+    identity=identity,
+)
 render_data_validity_controls(client_site)
 
 database_forecast = load_current_site_forecast(site_id)
 if database_forecast is not None:
     render_current_site_forecast(
         database_forecast,
+        org_id=int(client_site["org_id"]),
         site_name=str(client_site["site_name"]),
+        actor_id=identity.account_id,
     )
     st.stop()
+
+st.info(
+    "This Site / Unit does not have a published forecast yet. Marketing planning "
+    "will become available against the first published forecast vintage."
+)
+st.stop()
 
 bundle = dashboard_bundle(
     (BUNDLE_DIR / "validation.json").stat().st_mtime_ns,

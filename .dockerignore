@@ -1,0 +1,13 @@
+.git
+.gitignore
+.DS_Store
+.venv
+.pytest_cache
+.playwright-browsers
+.visual-tests
+.credent-artifacts
+__pycache__
+*.py[cod]
+tests
+data/onboarding_uploads
+.streamlit/secrets.toml
