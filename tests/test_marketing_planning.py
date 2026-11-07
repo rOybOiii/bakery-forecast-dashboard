@@ -23,7 +23,7 @@ from marketing_planning import (
 
 
 def baseline() -> pd.DataFrame:
-    dates = pd.date_range("2026-10-11", periods=14, freq="D")
+    dates = pd.date_range("2030-10-11", periods=14, freq="D")
     return pd.DataFrame(
         {
             "target_date": dates,
@@ -35,7 +35,7 @@ def baseline() -> pd.DataFrame:
 
 
 def test_draft_initialization_ladder_prefers_saved_then_published_then_zero():
-    start = date(2026, 10, 11)
+    start = date(2030, 10, 11)
     zero = initialize_draft(
         empty_state(),
         restaurant="downtown",
@@ -100,8 +100,8 @@ def test_optimizer_respects_eligibility_and_reconciles_total():
 def test_scorer_returns_marketing_lift_uncertainty_and_carryover():
     plan = make_plan(
         restaurant="downtown",
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         total_budget=4200,
         eligible={key: True for key in CHANNEL_ORDER},
         allocation_mode="optimized",
@@ -121,8 +121,8 @@ def test_scorer_returns_marketing_lift_uncertainty_and_carryover():
 def test_optimized_plan_builds_contiguous_budget_preserving_learning_blocks():
     plan = make_plan(
         restaurant="downtown",
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         total_budget=5750,
         eligible={key: True for key in CHANNEL_ORDER},
         allocation_mode="optimized",
@@ -143,8 +143,8 @@ def test_optimized_plan_builds_contiguous_budget_preserving_learning_blocks():
 def test_optimized_pause_is_zero_spend_and_reallocates_the_full_budget():
     plan = make_plan(
         restaurant="downtown",
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         total_budget=5750,
         eligible={key: True for key in CHANNEL_ORDER},
         allocation_mode="optimized",
@@ -169,15 +169,15 @@ def test_optimized_pause_is_zero_spend_and_reallocates_the_full_budget():
 
 def test_manual_pause_reflows_later_blocks_without_overlap():
     original = build_spend_blocks(
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         channel_totals={"search": 1400, "social": 700, "radio": 350},
         cadence_days=4,
     )
     reflowed = reflow_spend_blocks(
         original,
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         cadence_days=4,
         pause_after={1: 2},
     )
@@ -187,15 +187,15 @@ def test_manual_pause_reflows_later_blocks_without_overlap():
     active = [block for block in reflowed if not block.is_pause]
     assert active[0].daily_spend == original[0].daily_spend
     assert active[1].daily_spend == original[1].daily_spend
-    assert reflowed[-1].end == date(2026, 10, 24)
+    assert reflowed[-1].end == date(2030, 10, 24)
 
 
 def test_pause_schedule_survives_document_round_trip(tmp_path: Path):
     path = tmp_path / "paused-plan.json"
     plan = make_plan(
         restaurant="downtown",
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         total_budget=3200,
         eligible={key: True for key in CHANNEL_ORDER},
         allocation_mode="optimized",
@@ -213,8 +213,8 @@ def test_pause_schedule_survives_document_round_trip(tmp_path: Path):
 def test_learning_schedule_changes_daily_lift_without_changing_total_budget():
     common = dict(
         restaurant="downtown",
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 24),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 24),
         total_budget=4200,
         eligible={key: True for key in CHANNEL_ORDER},
         allocation_mode="optimized",
@@ -235,8 +235,8 @@ def test_document_save_draft_then_implement_is_atomic_and_reloads(tmp_path: Path
     path = tmp_path / "plan-state.json"
     plan = make_plan(
         restaurant="downtown",
-        start_date=date(2026, 10, 11),
-        end_date=date(2026, 10, 17),
+        start_date=date(2030, 10, 11),
+        end_date=date(2030, 10, 17),
         total_budget=1800,
         eligible={key: True for key in CHANNEL_ORDER},
         allocation_mode="optimized",
