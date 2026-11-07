@@ -10,6 +10,15 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from database_identity import Identity, IdentityRepository
+from gateway_client import (
+    GatewayIdentityService,
+    GatewayOnboardingRepository,
+    GatewayPipelineRepository,
+    GatewayWorkflowController,
+    active_gateway_scope,
+)
+
 
 ROOT = Path(__file__).resolve().parent
 DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -46,6 +55,8 @@ def _services():
 
 
 def _repository():
+    if active_gateway_scope() is not None:
+        return GatewayOnboardingRepository()
     repository_class, *_ = _services()
     return (
         repository_class(artifact_dir=ROOT.parent / ".credent-artifacts")
@@ -55,14 +66,16 @@ def _repository():
 
 
 def _pipeline_repository():
+    if active_gateway_scope() is not None:
+        return GatewayPipelineRepository()
     try:
-        from credent_pipeline import PipelineRepository
+        from credent_orchestrator import PipelineRepository
     except ImportError:
-        local_source = ROOT.parent / "Credent Core" / "packages" / "pipeline" / "src"
+        local_source = ROOT.parent / "Credent Core" / "packages" / "orchestrator" / "src"
         if local_source.exists() and str(local_source) not in sys.path:
             sys.path.insert(0, str(local_source))
         try:
-            from credent_pipeline import PipelineRepository
+            from credent_orchestrator import PipelineRepository
         except ImportError:
             return None
     return PipelineRepository()
@@ -71,18 +84,35 @@ def _pipeline_repository():
 def _workflow_controller(pipeline):
     """Build the enqueue-only controller used by the Streamlit request path."""
 
+    if isinstance(pipeline, GatewayPipelineRepository):
+        return GatewayWorkflowController()
+
     try:
-        from credent_pipeline import (
-            WorkflowController,
-            build_local_step_handler_registry,
-        )
+        from credent_orchestrator import WorkflowController
     except ImportError:
         return None
-    return WorkflowController(
-        pipeline,
-        build_local_step_handler_registry(),
-        worker_id=None,
-    )
+    return WorkflowController(pipeline)
+
+
+def _enqueue_fresh_first_forecast(review_id: int) -> int:
+    """Queue the active First Forecast recipe against an approved review."""
+
+    pipeline = _pipeline_repository()
+    repository = _repository()
+    try:
+        if pipeline is None or repository is None:
+            raise RuntimeError("The local forecast services are unavailable.")
+        controller = _workflow_controller(pipeline)
+        if controller is None:
+            raise RuntimeError("The workflow controller is unavailable.")
+        run_id, _ = controller.enqueue_active_first_forecast(review_id)
+        repository.link_first_forecast(review_id, run_id)
+        return int(run_id)
+    finally:
+        if pipeline is not None:
+            pipeline.close()
+        if repository is not None:
+            repository.close()
 
 
 def _site_context(site: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +141,7 @@ def _stage_label(stage: object) -> str:
         "forecast": "Building the forecast",
         "validate": "Checking the forecast",
         "validate_first_forecast": "Checking the forecast",
+        "validate_forecast_refresh": "Checking the refreshed forecast",
         "publish": "Publishing the forecast",
     }
     value = str(stage or "waiting")
@@ -156,6 +187,11 @@ def render_run_details(run_id: int, *, expanded: bool = False) -> None:
             "Elapsed",
             _elapsed_label(run.get("started_at"), run.get("ended_at")),
         )
+        if run.get("resumed_from_run_id") is not None:
+            st.caption(
+                f"Continues failed job #{int(run['resumed_from_run_id'])}; "
+                "accepted earlier work is reused where the workflow allows it."
+            )
 
         diagnostics_by_step = {
             int(item["step_id"]): item
@@ -169,14 +205,21 @@ def render_run_details(run_id: int, *, expanded: bool = False) -> None:
         for step in summary["steps"]:
             diagnostic = diagnostics_by_step.get(int(step["id"]))
             step_attempts = attempts_by_step.get(int(step["id"]), ())
+            reused = step.get("reused_from_step_id") is not None
             rows.append(
                 {
                     "Stage": _stage_label(step["stage"]),
-                    "Status": str(step["status"]).replace("_", " ").title(),
+                    "Status": (
+                        "Reused"
+                        if reused
+                        else str(step["status"]).replace("_", " ").title()
+                    ),
                     "Attempts": len(step_attempts) or int(step.get("attempt") or 0),
                     "Elapsed": _elapsed_label(step.get("started_at"), step.get("ended_at")),
                     "Checks": (
-                        str(diagnostic["status"]).title()
+                        "Accepted earlier"
+                        if reused
+                        else str(diagnostic["status"]).title()
                         if diagnostic is not None
                         else "—"
                     ),
@@ -327,8 +370,13 @@ def render_data_validity_controls(site: dict[str, Any]) -> None:
 
 
 @st.fragment(run_every="2s")
-def _render_forecast_job(run_id: int, review_id: int) -> None:
-    """Render and automatically refresh one first-forecast job."""
+def _render_forecast_job(
+    run_id: int,
+    review_id: int,
+    *,
+    refresh: bool = False,
+) -> None:
+    """Render and automatically refresh one forecast job."""
 
     pipeline = _pipeline_repository()
     if pipeline is None:
@@ -361,13 +409,40 @@ def _render_forecast_job(run_id: int, review_id: int) -> None:
     elif status == "running":
         st.info(f"Job #{run_id} is running: {_stage_label(queue.get('current_stage'))}.")
     elif status == "failed":
-        st.error(f"Job #{run_id} needs attention before it can be retried.")
-        if st.button(
-            "Retry first forecast",
-            key=f"retry_first_forecast_{run_id}",
-            type="primary",
-            use_container_width=True,
-        ):
+        st.error(f"Job #{run_id} needs attention before it can be resumed.")
+        if not refresh:
+            st.caption(
+                "Start fresh uses the currently active First Forecast workflow and "
+                "keeps this failed job in history. Resume continues this job's frozen "
+                "workflow version."
+            )
+            fresh, resume = st.columns(2)
+            start_fresh = fresh.button(
+                "Start fresh with current workflow",
+                key=f"fresh_first_forecast_{run_id}",
+                type="primary",
+                use_container_width=True,
+            )
+            resume_failed = resume.button(
+                "Resume frozen workflow",
+                key=f"retry_first_forecast_{run_id}",
+                use_container_width=True,
+            )
+            if start_fresh:
+                try:
+                    _enqueue_fresh_first_forecast(review_id)
+                except Exception as error:
+                    st.error(f"A fresh forecast could not be queued: {error}")
+                else:
+                    st.rerun(scope="app")
+        else:
+            resume_failed = st.button(
+                "Resume forecast refresh",
+                key=f"retry_first_forecast_{run_id}",
+                type="primary",
+                use_container_width=True,
+            )
+        if resume_failed:
             retry_pipeline = _pipeline_repository()
             repository = _repository()
             retry_run_id = None
@@ -377,10 +452,13 @@ def _render_forecast_job(run_id: int, review_id: int) -> None:
                 controller = _workflow_controller(retry_pipeline)
                 if controller is None:
                     raise RuntimeError("The workflow controller is unavailable.")
-                retry_run_id, _ = controller.enqueue_active_first_forecast(review_id)
-                repository.link_first_forecast(review_id, retry_run_id)
+                retry_run_id, _ = controller.resume_failed_run(run_id)
+                if refresh:
+                    repository.link_forecast_refresh(review_id, retry_run_id)
+                else:
+                    repository.link_first_forecast(review_id, retry_run_id)
             except Exception as error:
-                st.error(f"The first forecast could not be retried: {error}")
+                st.error(f"The forecast could not be resumed: {error}")
             finally:
                 if retry_pipeline is not None:
                     retry_pipeline.close()
@@ -410,7 +488,11 @@ def _upload_widget_key(context: dict[str, Any]) -> str:
     return f"sales_history_upload_{int(context['site_id'])}_{mode}"
 
 
-def _organization_setup(repository) -> None:
+def _organization_setup(
+    repository,
+    identity: Identity,
+    identity_repository: IdentityRepository,
+) -> None:
     st.markdown('<div class="dashboard-kicker">Organization setup</div>', unsafe_allow_html=True)
     st.markdown('<h1 class="dashboard-title">Welcome to Credent</h1>', unsafe_allow_html=True)
     st.markdown(
@@ -418,7 +500,7 @@ def _organization_setup(repository) -> None:
         unsafe_allow_html=True,
     )
 
-    organizations = repository.organizations()
+    organizations = identity_repository.organizations_for(identity)
     if organizations:
         with st.expander("Continue an existing organization"):
             for organization in organizations:
@@ -456,10 +538,11 @@ def _organization_setup(repository) -> None:
             st.error("Add at least one Site or Unit.")
         else:
             try:
-                created = repository.create_organization(
+                created = identity_repository.create_organization(
                     business_name=organization_name,
                     site_names=names,
                     timezone=timezone,
+                    owner_account_id=identity.account_id,
                 )
             except ValueError as error:
                 st.error(str(error).capitalize() + ".")
@@ -469,25 +552,29 @@ def _organization_setup(repository) -> None:
                 st.rerun()
 
 
-def render_client_shell() -> dict[str, Any] | None:
+def render_client_shell(identity: Identity) -> dict[str, Any] | None:
     """Render organization/site selection and return the selected site's state."""
-
-    repository = _repository()
-    if repository is None:
-        st.error("The local onboarding service is not installed in this Streamlit environment.")
-        return None
+    identity_repository = (
+        GatewayIdentityService(identity)
+        if identity.gateway_token
+        else IdentityRepository()
+    )
     try:
         org_id = st.session_state.get("client_org_id")
         if org_id is None:
-            _organization_setup(repository)
+            _organization_setup(None, identity, identity_repository)
             return None
-        organizations = {int(item["id"]): item for item in repository.organizations()}
+        organizations = {
+            int(item["id"]): item
+            for item in identity_repository.organizations_for(identity)
+        }
         organization = organizations.get(int(org_id))
         if organization is None:
             st.session_state.pop("client_org_id", None)
             st.session_state.pop("client_site_id", None)
             st.rerun()
-        sites = repository.sites_for_org(int(org_id))
+        identity_repository.authorize_org(identity, int(org_id))
+        sites = identity_repository.sites_for_org(int(org_id))
         if not sites:
             st.error("This organization has no Sites or Units yet.")
             return None
@@ -523,7 +610,7 @@ def render_client_shell() -> dict[str, Any] | None:
                         st.warning("Enter at least one Site or Unit.")
                     else:
                         try:
-                            new_ids = repository.add_sites(
+                            new_ids = identity_repository.add_sites(
                                 org_id=int(org_id),
                                 site_names=names,
                                 timezone=str(selected["timezone"]),
@@ -536,6 +623,42 @@ def render_client_shell() -> dict[str, Any] | None:
                             st.session_state.pop("client_site_picker", None)
                             st.session_state.pop("additional_site_editor", None)
                             st.rerun()
+            events_open = bool(st.session_state.get("show_events_workspace"))
+            if st.button(
+                "Back to Site / Unit" if events_open else "Events",
+                type="tertiary",
+                use_container_width=True,
+            ):
+                st.session_state.show_events_workspace = not events_open
+                st.session_state.show_sales_data_workspace = False
+                st.session_state.show_job_monitoring = False
+                st.session_state.show_marketing_workspace = False
+                st.session_state.show_organization_settings = False
+                st.rerun()
+            sales_open = bool(st.session_state.get("show_sales_data_workspace"))
+            if st.button(
+                "Back to Site / Unit" if sales_open else "Sales data",
+                type="tertiary",
+                use_container_width=True,
+            ):
+                st.session_state.show_sales_data_workspace = not sales_open
+                st.session_state.show_events_workspace = False
+                st.session_state.show_marketing_workspace = False
+                st.session_state.show_job_monitoring = False
+                st.session_state.show_organization_settings = False
+                st.rerun()
+            marketing_open = bool(st.session_state.get("show_marketing_workspace"))
+            if st.button(
+                "Back to Site / Unit" if marketing_open else "Marketing",
+                type="tertiary",
+                use_container_width=True,
+            ):
+                st.session_state.show_marketing_workspace = not marketing_open
+                st.session_state.show_events_workspace = False
+                st.session_state.show_sales_data_workspace = False
+                st.session_state.show_job_monitoring = False
+                st.session_state.show_organization_settings = False
+                st.rerun()
             monitoring_open = bool(st.session_state.get("show_job_monitoring"))
             if st.button(
                 "Back to Site / Unit" if monitoring_open else "Jobs & workers",
@@ -543,12 +666,30 @@ def render_client_shell() -> dict[str, Any] | None:
                 use_container_width=True,
             ):
                 st.session_state.show_job_monitoring = not monitoring_open
+                st.session_state.show_events_workspace = False
+                st.session_state.show_sales_data_workspace = False
+                st.session_state.show_marketing_workspace = False
+                st.session_state.show_organization_settings = False
+                st.rerun()
+            settings_open = bool(st.session_state.get("show_organization_settings"))
+            if st.button(
+                "Back to Site / Unit" if settings_open else "Organization settings",
+                type="tertiary",
+                use_container_width=True,
+            ):
+                st.session_state.show_organization_settings = not settings_open
+                st.session_state.show_events_workspace = False
+                st.session_state.show_sales_data_workspace = False
+                st.session_state.show_marketing_workspace = False
+                st.session_state.show_job_monitoring = False
                 st.rerun()
             if st.button("Switch organization", type="tertiary", use_container_width=True):
                 st.session_state.pop("client_org_id", None)
                 st.session_state.pop("client_site_id", None)
                 st.session_state.pop("client_site_picker", None)
                 st.session_state.pop("onboarding_context", None)
+                st.session_state.show_sales_data_workspace = False
+                st.session_state.show_organization_settings = False
                 st.rerun()
         selected = sites_by_id[selected_id]
         context = _site_context(selected)
@@ -561,7 +702,7 @@ def render_client_shell() -> dict[str, Any] | None:
             st.session_state.onboarding_context = existing_context
         return selected
     finally:
-        repository.close()
+        identity_repository.close()
 
 
 def _progress(
@@ -759,6 +900,7 @@ def _upload_step(repository, context: dict[str, Any]) -> None:
             source_hash=stored.digest,
             scan=scan,
             replace_review_id=context.get("replace_review_id"),
+            actor_id=context.get("actor_id"),
         )
         context["review_id"] = review_id
         context.pop("replace_review_id", None)
@@ -972,6 +1114,7 @@ def _issues_step(repository, context: dict[str, Any], state: dict[str, Any]) -> 
                         int(issue["id"]),
                         decision="keep",
                         reason="Accepted as a historical mismatch with the proposed planning schedule.",
+                        actor_id=context.get("actor_id"),
                     )
             for row, actionable_entries, decision, replacement in selections:
                 if not actionable_entries:
@@ -983,6 +1126,7 @@ def _issues_step(repository, context: dict[str, Any], state: dict[str, Any]) -> 
                     [int(entry["id"]) for entry in actionable_entries],
                     decision=decision,
                     new_value=float(replacement) if decision == "replace" else None,
+                    actor_id=context.get("actor_id"),
                 )
             unresolved = repository.unresolved_count(state["id"])
             duplicate_errors = repository.duplicate_group_errors(state["id"])
@@ -1040,7 +1184,10 @@ def _approval_step(repository, context: dict[str, Any], state: dict[str, Any]) -
     )
     if approve:
         with st.spinner("Preparing the approved panel and checking modeling readiness…"):
-            repository.approve_and_diagnose(state["id"])
+            repository.approve_and_diagnose(
+                state["id"],
+                actor_id=context.get("actor_id"),
+            )
         st.rerun()
     if st.button("Back to data decisions", use_container_width=True):
         repository.set_step(state["id"], "issues")
@@ -1156,13 +1303,19 @@ def render_site_home(site: dict[str, Any]) -> None:
                     if queued:
                         st.rerun()
         elif onboarding_state == "forecasting":
-            st.markdown("## Your first forecast is in progress")
+            refresh = bool(state is not None and int(state.get("review_no") or 1) > 1)
+            st.markdown(
+                "## Your refreshed forecast is in progress"
+                if refresh
+                else "## Your first forecast is in progress"
+            )
             if site.get("forecast_run_id") is None:
                 st.info("The forecast request is recorded and waiting for the local worker.")
             else:
                 _render_forecast_job(
                     int(site["forecast_run_id"]),
                     int(state["id"]),
+                    refresh=refresh,
                 )
 
         if state is not None and onboarding_state == "ready_for_forecast":
