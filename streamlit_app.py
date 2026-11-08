@@ -484,16 +484,6 @@ if client_site["onboarding_state"] != "active":
     render_site_home(client_site)
     st.stop()
 
-if client_site.get("forecast_run_id") is not None:
-    render_run_details(int(client_site["forecast_run_id"]))
-
-render_forecast_refresh_controls(
-    client_site,
-    actor_id=identity.account_id,
-    identity=identity,
-)
-render_data_validity_controls(client_site)
-
 database_forecast = load_current_site_forecast(site_id)
 if database_forecast is not None:
     render_current_site_forecast(
@@ -502,6 +492,20 @@ if database_forecast is not None:
         site_name=str(client_site["site_name"]),
         actor_id=identity.account_id,
     )
+    st.divider()
+    st.markdown('<div class="section-title">Forecast administration</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">Job details, data updates, and result history.</div>',
+        unsafe_allow_html=True,
+    )
+    if client_site.get("forecast_run_id") is not None:
+        render_run_details(int(client_site["forecast_run_id"]))
+    render_forecast_refresh_controls(
+        client_site,
+        actor_id=identity.account_id,
+        identity=identity,
+    )
+    render_data_validity_controls(client_site)
     st.stop()
 
 st.info(

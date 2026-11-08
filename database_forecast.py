@@ -115,6 +115,42 @@ def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
                     "input_artifact_id": forecast["input_artifact_id"],
                 },
             ).mappings().all()
+            replay_vintages = connection.execute(
+                text(
+                    """
+                    SELECT f.id, f.origin, f.published_at, a.run_id
+                    FROM forecast f
+                    JOIN artifact a ON a.id = f.artifact_id
+                    JOIN model_run r ON r.id = a.run_id
+                    WHERE f.site_id = :site_id
+                      AND f.metric_id = :metric_id
+                      AND f.status = 'published'
+                      AND a.status = 'published'
+                      AND a.validity_status = 'valid'
+                      AND r.status = 'published'
+                      AND r.validity_status = 'valid'
+                    ORDER BY f.published_at DESC NULLS LAST, f.id DESC
+                    LIMIT 12
+                    """
+                ),
+                {"site_id": site_id, "metric_id": forecast["metric_id"]},
+            ).mappings().all()
+            replay_ids = [int(item["id"]) for item in replay_vintages]
+            replay_points = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT forecast_id, date, lead, low, median, high
+                        FROM prediction
+                        WHERE forecast_id = ANY(:forecast_ids)
+                        ORDER BY forecast_id, lead
+                        """
+                    ),
+                    {"forecast_ids": replay_ids},
+                ).mappings().all()
+                if replay_ids
+                else []
+            )
             events = connection.execute(
                 text(
                     """
@@ -199,6 +235,8 @@ def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
         "forecast": dict(forecast),
         "predictions": [dict(row) for row in predictions],
         "observations": [dict(row) for row in reversed(observations)],
+        "replay_vintages": [dict(row) for row in reversed(replay_vintages)],
+        "replay_points": [dict(row) for row in replay_points],
         "events": [dict(row) for row in events],
         "diagnostics": [dict(row) for row in diagnostics],
         "marketing_score": (
@@ -211,6 +249,108 @@ def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
 
 def _money(value: float) -> str:
     return f"${value:,.0f}"
+
+
+def _signed_money(value: float) -> str:
+    prefix = "+" if value > 0 else "−" if value < 0 else ""
+    return f"{prefix}${abs(value):,.0f}"
+
+
+@st.fragment(run_every="1s")
+def _render_forecast_replay(
+    *,
+    site_id: int,
+    vintages: list[dict[str, Any]],
+    points: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+) -> None:
+    """Render the saved-forecast player used on the site landing page."""
+
+    if not vintages:
+        st.caption("Forecast replay will appear after the first forecast is published.")
+        return
+    index_key = f"forecast_replay_index_{site_id}"
+    playing_key = f"forecast_replay_playing_{site_id}"
+    if index_key not in st.session_state:
+        st.session_state[index_key] = len(vintages) - 1
+    if playing_key not in st.session_state:
+        st.session_state[playing_key] = False
+    if st.session_state[playing_key]:
+        next_index = int(st.session_state[index_key]) + 1
+        if next_index >= len(vintages):
+            st.session_state[playing_key] = False
+        else:
+            st.session_state[index_key] = next_index
+
+    control, scrubber = st.columns([1, 7], vertical_alignment="bottom")
+    if control.button(
+        "Pause" if st.session_state[playing_key] else "Play",
+        key=f"forecast_replay_toggle_{site_id}",
+        use_container_width=True,
+    ):
+        if int(st.session_state[index_key]) >= len(vintages) - 1:
+            st.session_state[index_key] = 0
+        st.session_state[playing_key] = not st.session_state[playing_key]
+        st.rerun(scope="fragment")
+
+    def issue_label(index: int) -> str:
+        value = vintages[index].get("published_at") or vintages[index].get("origin")
+        return pd.Timestamp(value).strftime("%b %-d, %Y")
+
+    scrubber.select_slider(
+        "Forecast issue date",
+        options=list(range(len(vintages))),
+        format_func=issue_label,
+        key=index_key,
+    )
+    selected = vintages[int(st.session_state[index_key])]
+    forecast_id = int(selected["id"])
+    frame = pd.DataFrame(
+        row for row in points if int(row["forecast_id"]) == forecast_id
+    )
+    if frame.empty:
+        st.caption("This saved forecast has no prediction points to replay.")
+        return
+    frame["date"] = pd.to_datetime(frame["date"])
+    for column in ("low", "median", "high"):
+        frame[column] = pd.to_numeric(frame[column])
+    actuals = pd.DataFrame(observations)
+    if not actuals.empty:
+        actuals["date"] = pd.to_datetime(actuals["date"])
+        actuals["value"] = pd.to_numeric(actuals["value"])
+        actuals = actuals.loc[
+            actuals["date"].between(frame["date"].min(), frame["date"].max())
+        ]
+    colors = _chart_palette()
+    base = alt.Chart(frame).encode(x=alt.X("date:T", title=None))
+    replay_chart = base.mark_area(color=colors["band"], opacity=0.24).encode(
+        y=alt.Y("low:Q", title="Sales", scale=alt.Scale(zero=False)),
+        y2="high:Q",
+    ) + base.mark_line(color=colors["forecast"], strokeWidth=3).encode(
+        y="median:Q",
+        tooltip=[
+            alt.Tooltip("date:T", title="Date"),
+            alt.Tooltip("median:Q", title="Forecast", format="$,.0f"),
+            alt.Tooltip("low:Q", title="Low", format="$,.0f"),
+            alt.Tooltip("high:Q", title="High", format="$,.0f"),
+        ],
+    )
+    if not actuals.empty:
+        replay_chart += alt.Chart(actuals).mark_line(
+            color=colors["actual"], strokeWidth=2, point=True
+        ).encode(
+            x="date:T",
+            y="value:Q",
+            tooltip=[
+                alt.Tooltip("date:T", title="Date"),
+                alt.Tooltip("value:Q", title="Actual sales", format="$,.0f"),
+            ],
+        )
+    st.altair_chart(replay_chart.properties(height=285), use_container_width=True)
+    st.caption(
+        f"Forecast issued {issue_label(int(st.session_state[index_key]))} · "
+        f"job #{int(selected['run_id'])}"
+    )
 
 
 def render_current_site_forecast(
@@ -229,43 +369,18 @@ def render_current_site_forecast(
         observations["date"] = pd.to_datetime(observations["date"])
         observations["value"] = pd.to_numeric(observations["value"])
 
-    st.markdown('<div class="dashboard-kicker">Daily production planning</div>', unsafe_allow_html=True)
-    st.markdown(f'<h1 class="dashboard-title">{site_name}</h1>', unsafe_allow_html=True)
+    forecast_through = predictions["date"].max()
     st.markdown(
-        f'<div class="dashboard-subtitle">Current published forecast · run #{forecast["run_id"]}</div>',
+        f'<div class="dashboard-kicker">{site_name}</div>',
         unsafe_allow_html=True,
     )
-    with st.expander("Forecast actions", expanded=False):
-        st.caption(
-            "Run the currently active First Forecast workflow again using the "
-            "same approved data. The published forecast remains available while "
-            "the new job runs."
-        )
-        review_id = forecast.get("review_id")
-        if st.button(
-            "Run again with current data",
-            type="primary",
-            use_container_width=True,
-            key=f"rerun_forecast_{forecast['run_id']}",
-            disabled=review_id is None,
-        ):
-            try:
-                scope = active_gateway_scope()
-                if scope is not None:
-                    new_run_id, _created = scope["client"].rerun_first_forecast(
-                        org_id,
-                        int(forecast["site_id"]),
-                        int(forecast["metric_id"]),
-                    )
-                else:
-                    new_run_id = _enqueue_fresh_first_forecast(int(review_id))
-            except Exception as error:
-                st.error(f"A new forecast could not be queued: {error}")
-            else:
-                st.toast(f"Forecast job #{new_run_id} was queued.", icon="✅")
-                st.rerun()
-        if review_id is None:
-            st.info("There is no current approved dataset available to rerun.")
+    st.markdown('<h1 class="dashboard-title">Upcoming forecast</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="dashboard-subtitle">'
+        f'Forecast through {forecast_through:%B %-d, %Y} · '
+        f'published from job #{forecast["run_id"]}</div>',
+        unsafe_allow_html=True,
+    )
     if forecast.get("provenance_recovery_id") is not None:
         manifest = dict(forecast.get("provenance_recovery_manifest") or {})
         changed_rows = list(manifest.get("changed_rows") or [])
@@ -345,27 +460,67 @@ def render_current_site_forecast(
         )
     total = float(display_forecast["presented_median"].sum())
     average = float(display_forecast["presented_median"].mean())
-    metrics = st.columns(4)
-    metrics[0].metric(f"Next {len(predictions)} days", _money(total))
-    metrics[1].metric("Average forecast day", _money(average))
-    if operational:
-        organic_total = float(marketing_points["base_median"].sum())
-        lift_total = float(marketing_points["marketing_lift_median"].sum())
-        metrics[2].metric(
-            "Marketing influence",
-            _money(lift_total),
-            delta=f"{_money(float(marketing_points['planned_lift_median'].sum()))} planned",
-        )
-        metrics[3].metric("Organic baseline", _money(organic_total))
-    else:
-        metrics[2].metric(
-            "Forecast origin", pd.Timestamp(forecast["origin"]).strftime("%b %-d")
-        )
-        metrics[3].metric(
-            "Forecast through", predictions["date"].max().strftime("%b %-d")
-        )
+    action_columns = st.columns(3, gap="medium")
+    with action_columns[0], st.container(border=True):
+        st.markdown("### Update forecast")
+        st.caption("Add recent sales and refresh the forecast.")
+        if st.button(
+            "Update sales data",
+            type="primary",
+            use_container_width=True,
+            key=f"landing_update_forecast_{forecast['site_id']}",
+        ):
+            st.session_state.show_sales_data_workspace = True
+            st.rerun()
+    with action_columns[1], st.container(border=True):
+        st.markdown("### Plan forecast events")
+        st.caption("Place known events into this forecast.")
+        if st.button(
+            "Plan events",
+            use_container_width=True,
+            key=f"landing_plan_events_{forecast['site_id']}",
+        ):
+            st.session_state.event_imputation_drawer_open = True
+            st.rerun()
+    with action_columns[2], st.container(border=True):
+        st.markdown("### Marketing plan")
+        st.caption("Review or revise the current plan.")
+        if st.button(
+            "Open marketing",
+            use_container_width=True,
+            key=f"landing_marketing_{forecast['site_id']}",
+        ):
+            if marketing is not None:
+                st.session_state.mmm_plan_drawer_open = True
+            else:
+                st.session_state.show_marketing_workspace = True
+            st.rerun()
 
-    st.markdown('<div class="section-title">Recent sales and the next two weeks</div>', unsafe_allow_html=True)
+    replay_vintages = list(data.get("replay_vintages") or [])
+    replay_points = list(data.get("replay_points") or [])
+    previous_total = None
+    if len(replay_vintages) > 1:
+        prior_id = int(replay_vintages[-2]["id"])
+        prior_values = [
+            float(row["median"])
+            for row in replay_points
+            if int(row["forecast_id"]) == prior_id
+        ]
+        if prior_values:
+            previous_total = sum(prior_values)
+    range_half_width = (
+        float(display_forecast["presented_high"].sum())
+        - float(display_forecast["presented_low"].sum())
+    ) / 2
+    metrics = st.columns(3)
+    metrics[0].metric("Projected sales", _money(total))
+    metrics[1].metric(
+        "Compared with prior forecast",
+        _signed_money(total - previous_total) if previous_total is not None else "First forecast",
+    )
+    metrics[2].metric("Forecast range", f"± {_money(range_half_width)}")
+
+    st.markdown('<div class="section-title">Current forecast</div>', unsafe_allow_html=True)
     if operational:
         st.markdown(
             '<div class="section-note">The dashed line is the marketing-clean organic baseline. The green line adds carryover from prior spend and expected lift from the implemented plan. The shaded band is the full scored uncertainty.</div>',
@@ -439,83 +594,103 @@ def render_current_site_forecast(
             )
         )
         chart = band + forecast_line
-    if not observations.empty:
+    chart_observations = observations.tail(28) if not observations.empty else observations
+    if not chart_observations.empty:
         actual_line = (
-            alt.Chart(observations)
+            alt.Chart(chart_observations)
             .mark_line(color=colors["actual"], strokeWidth=2)
             .encode(x="date:T", y="value:Q", tooltip=["date:T", "value:Q"])
         )
         chart = actual_line + chart
     st.altair_chart(chart.properties(height=390), use_container_width=True)
 
-    if operational:
-        carryover = float(marketing_points["carryover_median"].sum())
-        planned = float(marketing_points["planned_lift_median"].sum())
-        with st.container(border=True):
-            st.markdown("**Implemented marketing plan**")
-            plan_copy = (
-                "No future spend is included; the current influence is carryover only."
-                if marketing.get("plan_id") is None
-                else (
-                    f"Plan #{marketing['plan_id']} is scored against forecast run "
-                    f"#{marketing['source_forecast_run_id']}."
-                )
+    plan_columns = st.columns(2, gap="medium")
+    with plan_columns[0], st.container(border=True):
+        st.markdown("### Marketing plan")
+        if operational:
+            planned = float(marketing_points["planned_lift_median"].sum())
+            st.write(
+                f"{_money(float(marketing.get('planned_spend') or 0.0))} planned spend · "
+                f"{_signed_money(planned)} expected sales lift."
             )
-            st.caption(plan_copy)
-            breakdown = st.columns(4)
-            breakdown[0].metric("Existing carryover", _money(carryover))
-            breakdown[1].metric("Planned lift", _money(planned))
-            breakdown[2].metric(
-                "Planned spend",
-                _money(float(marketing.get("planned_spend") or 0.0)),
-            )
-            breakdown[3].metric(
-                "MMM health", str(marketing.get("health_status") or "watch").title()
-            )
-            plan_column, workspace_column = st.columns(2)
-            if plan_column.button(
-                "Review or change plan",
-                type="primary",
-                width="stretch",
-            ):
+            marketing_button = "Open plan"
+        elif marketing is not None:
+            lifecycle = str(marketing.get("lifecycle") or "learning").replace("_", " ")
+            st.write(f"Marketing learning is {lifecycle}; no plan is scored yet.")
+            marketing_button = "Review learning"
+        else:
+            st.write("No marketing plan is currently applied to this forecast.")
+            marketing_button = "Create plan"
+        if st.button(
+            marketing_button,
+            use_container_width=True,
+            key=f"forecast_plan_summary_{forecast['site_id']}",
+        ):
+            if marketing is not None:
                 st.session_state.mmm_plan_drawer_open = True
-                st.rerun()
-            if workspace_column.button(
-                "Actual spend and Learning",
-                width="stretch",
-            ):
+            else:
                 st.session_state.show_marketing_workspace = True
-                st.rerun()
-    elif marketing is not None:
-        lifecycle = str(marketing.get("lifecycle") or "learning").replace("_", " ")
-        with st.container(border=True):
-            st.markdown("**Marketing learning**")
-            st.caption(
-                f"MMM is {lifecycle}. This forecast remains organic-only until an "
-                "eligible fit and its scored forecast publish together."
-            )
-            if st.button("Review marketing learning", type="primary"):
-                st.session_state.show_marketing_workspace = True
-                st.rerun()
+            st.rerun()
 
-    with st.container(border=True):
-        st.markdown("**Upcoming events**")
-        placements = list((event_plan or {}).get("placements") or [])
+    placements = list((event_plan or {}).get("placements") or [])
+    with plan_columns[1], st.container(border=True):
+        st.markdown("### Forecast events")
         if placements:
             total_event_effect = float(display_forecast["event_median"].sum())
-            st.caption(
-                f"{len(placements)} event placement(s) are implemented against "
-                f"forecast #{forecast['id']}; expected effect is "
-                f"{_money(total_event_effect)}."
+            st.write(
+                f"{len(placements)} known event occurrence(s) · "
+                f"{_signed_money(total_event_effect)} expected effect."
             )
         else:
-            st.caption(
-                "No known future events are imputed into this forecast. Add one "
-                "from a reviewed event family."
-            )
-        if st.button("Review or impute events", type="primary"):
+            st.write("No known future events are currently placed in this forecast.")
+        if st.button(
+            "Plan events",
+            use_container_width=True,
+            key=f"forecast_event_summary_{forecast['site_id']}",
+        ):
             st.session_state.event_imputation_drawer_open = True
             st.rerun()
+
+    st.markdown('<div class="section-title">Forecast replay</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">Play through saved forecasts and compare each version with reported sales.</div>',
+        unsafe_allow_html=True,
+    )
+    _render_forecast_replay(
+        site_id=int(forecast["site_id"]),
+        vintages=replay_vintages,
+        points=replay_points,
+        observations=data["observations"],
+    )
+
+    with st.expander("Run forecast again with the current approved data", expanded=False):
+        st.caption(
+            "This keeps the published forecast available while a new run uses the "
+            "currently active workflow."
+        )
+        review_id = forecast.get("review_id")
+        if st.button(
+            "Run again with current data",
+            type="primary",
+            use_container_width=True,
+            key=f"rerun_forecast_{forecast['run_id']}",
+            disabled=review_id is None,
+        ):
+            try:
+                scope = active_gateway_scope()
+                if scope is not None:
+                    new_run_id, _created = scope["client"].rerun_first_forecast(
+                        org_id,
+                        int(forecast["site_id"]),
+                        int(forecast["metric_id"]),
+                    )
+                else:
+                    new_run_id = _enqueue_fresh_first_forecast(int(review_id))
+            except Exception as error:
+                st.error(f"A new forecast could not be queued: {error}")
+            else:
+                st.toast(f"Forecast job #{new_run_id} was queued.", icon="✅")
+                st.rerun()
 
     warnings = [row for row in data["diagnostics"] if row["status"] == "warning"]
     if warnings:
