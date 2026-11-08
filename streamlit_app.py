@@ -51,56 +51,186 @@ SERVING_SNAPSHOT = ROOT / "data" / "backend_snapshot_v2" / "snapshot.json"
 
 
 st.set_page_config(
-    page_title="Bakery Forecast",
-    page_icon="🥐",
+    page_title="Forecasting Credib.ly",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+active_theme = getattr(getattr(st.context, "theme", None), "type", "light")
+ui_palette = (
+    {
+        "storm": "#20242A",
+        "storm_soft": "#303136",
+        "sage": "#A6AD7D",
+        "sage_soft": "#353B2D",
+        "blue_gray": "#9AADB6",
+    }
+    if active_theme == "dark"
+    else {
+        "storm": "#262B30",
+        "storm_soft": "#D5DADD",
+        "sage": "#596047",
+        "sage_soft": "#D8D7C4",
+        "blue_gray": "#4F6068",
+    }
+)
+
+st.markdown(
+    f"""
+    <style>
+    :root {{
+        --storm: {ui_palette["storm"]};
+        --storm-soft: {ui_palette["storm_soft"]};
+        --sage: {ui_palette["sage"]};
+        --sage-soft: {ui_palette["sage_soft"]};
+        --blue-gray: {ui_palette["blue_gray"]};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.markdown(
     """
     <style>
     :root {
-        --ink: #1d2a24;
-        --green: #2f6b55;
-        --cream: #f7f4ec;
-        --paper: #fffdf8;
-        --line: #e4dfd4;
-        --muted: #6f7972;
+        --ink: var(--text-color);
+        --green: var(--primary-color);
+        --cream: var(--background-color);
+        --paper: var(--secondary-background-color);
+        --line: var(--border-color, color-mix(in srgb, var(--text-color) 18%, transparent));
+        --muted: color-mix(in srgb, var(--text-color) 66%, var(--background-color));
+        --soft-accent: color-mix(in srgb, var(--primary-color) 16%, var(--secondary-background-color));
+        --quiet-surface: color-mix(in srgb, var(--secondary-background-color) 82%, var(--background-color));
     }
     .stApp { background: var(--cream); color: var(--ink); }
-    [data-testid="stHeader"] { background: rgba(247, 244, 236, 0.92); }
-    [data-testid="stSidebar"] { background: #ecf0e9; border-right: 1px solid var(--line); }
+    [data-testid="stHeader"] {
+        background: color-mix(in srgb, var(--cream) 92%, transparent);
+        border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+        backdrop-filter: blur(12px);
+    }
+    [data-testid="stSidebar"] {
+        background: var(--secondary-background-color);
+        border-right: 1px solid var(--line);
+    }
+    [data-testid="stSidebarContent"] { padding-top: 1.25rem; }
+    [data-testid="stSidebar"] hr { border-color: var(--line); }
+    [data-testid="stSidebar"] h3 {
+        color: var(--ink);
+        font-size: .88rem;
+        font-weight: 650;
+        letter-spacing: -.01em;
+        margin-bottom: .35rem;
+    }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stSidebar"] label { color: var(--ink); }
+    [data-testid="stSidebar"] button[kind="tertiary"],
+    [data-testid="stSidebar"] [data-testid="stBaseButton-tertiary"] {
+        justify-content: flex-start;
+        background: transparent !important;
+        border-color: transparent !important;
+        color: var(--muted) !important;
+        padding-left: .55rem;
+    }
+    [data-testid="stSidebar"] button[kind="tertiary"]:hover,
+    [data-testid="stSidebar"] [data-testid="stBaseButton-tertiary"]:hover {
+        background: var(--soft-accent) !important;
+        color: var(--ink) !important;
+    }
     [data-testid="stMetric"] {
         background: var(--paper);
         border: 1px solid var(--line);
-        border-radius: 14px;
-        padding: 16px 18px;
-        box-shadow: 0 3px 14px rgba(30, 42, 36, 0.04);
+        border-radius: 12px;
+        padding: 14px 16px;
+        box-shadow: 0 2px 12px color-mix(in srgb, var(--ink) 5%, transparent);
     }
     [data-testid="stMetricLabel"] { color: var(--muted); }
     [data-testid="stMetricValue"] { color: var(--ink); }
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background: var(--paper);
+        border-color: var(--line) !important;
+        border-radius: 12px;
+    }
+    [data-testid="stExpander"] {
+        background: var(--paper);
+        border-color: var(--line) !important;
+        border-radius: 11px;
+        overflow: hidden;
+    }
+    [data-testid="stAlert"] {
+        border-radius: 11px;
+        border-color: color-mix(in srgb, currentColor 22%, transparent);
+    }
+    [data-baseweb="input"] > div,
+    [data-baseweb="select"] > div,
+    [data-baseweb="textarea"] > div,
+    [data-baseweb="base-input"] {
+        background: var(--paper) !important;
+        border-color: var(--line) !important;
+        border-radius: 9px !important;
+    }
+    [data-testid="stDataFrame"], [data-testid="stTable"] {
+        border-radius: 10px;
+        overflow: hidden;
+    }
+    button[kind="primary"], [data-testid="stBaseButton-primary"] {
+        border-radius: 9px !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+    }
+    button[kind="secondary"], button[kind="tertiary"],
+    [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-tertiary"] {
+        border-color: var(--line) !important;
+        border-radius: 9px !important;
+        background: var(--paper) !important;
+        color: var(--ink) !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stSegmentedControl"] [role="radiogroup"] {
+        background: var(--quiet-surface);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 3px;
+    }
+    [data-testid="stSegmentedControl"] button {
+        border-radius: 7px !important;
+    }
+    [data-testid="stTabs"] [role="tablist"] {
+        gap: .35rem;
+        border-bottom: 1px solid var(--line);
+    }
+    [data-testid="stTabs"] button[role="tab"] {
+        border-radius: 8px 8px 0 0;
+        color: var(--muted);
+    }
+    section[role="dialog"] {
+        background: var(--paper) !important;
+        border: 1px solid var(--line);
+        border-radius: 14px !important;
+        box-shadow: 0 18px 48px color-mix(in srgb, var(--ink) 22%, transparent) !important;
+    }
     .dashboard-kicker {
         color: var(--green);
-        font-size: 0.78rem;
-        font-weight: 750;
+        font-size: 0.72rem;
+        font-weight: 650;
         letter-spacing: 0.11em;
         text-transform: uppercase;
-        margin-bottom: 0.2rem;
+        margin-bottom: 0.3rem;
     }
     .dashboard-title {
         color: var(--ink);
-        font-size: clamp(2.15rem, 4vw, 3.5rem);
-        font-weight: 750;
+        font-size: clamp(2rem, 3.6vw, 3.15rem);
+        font-weight: 650;
         letter-spacing: -0.045em;
-        line-height: 1.02;
+        line-height: 1.04;
         margin: 0;
     }
     .dashboard-subtitle { color: var(--muted); margin-top: 0.55rem; }
     .section-title {
         color: var(--ink);
-        font-size: 1.35rem;
-        font-weight: 720;
+        font-size: 1.2rem;
+        font-weight: 650;
         letter-spacing: -0.02em;
         margin: 0.4rem 0 0;
     }
@@ -108,16 +238,19 @@ st.markdown(
     .finding-card {
         background: var(--paper);
         border: 1px solid var(--line);
-        border-left: 4px solid #d56a4a;
+        border-left: 4px solid var(--green);
         border-radius: 10px;
         padding: 0.72rem 0.85rem;
         margin-bottom: 0.55rem;
     }
-    .finding-card.regime-card { border-left-color: #c39a31; }
+    .finding-card.regime-card { border-left-color: color-mix(in srgb, var(--green) 55%, var(--muted)); }
     .finding-card strong { color: var(--ink); }
     .finding-card small { color: var(--muted); }
-    div[data-testid="stAlert"] { border-radius: 12px; }
-    .block-container { max-width: 1320px; padding-top: 4.75rem; padding-bottom: 4rem; }
+    .block-container { max-width: 1220px; padding-top: 3.25rem; padding-bottom: 4rem; }
+    @media (max-width: 720px) {
+        .block-container { padding-top: 2.4rem; padding-left: 1rem; padding-right: 1rem; }
+        .dashboard-title { font-size: 2rem; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -578,7 +711,7 @@ else:
     with left:
         st.markdown('<div class="section-title">How the last forecast performed</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="section-note"><span style="color:#2f6b55">Forecast</span> compared with <span style="color:#d56a4a">actual sales</span>, using only information available beforehand.</div>',
+            '<div class="section-note"><span style="color:var(--sage)">Forecast</span> compared with <span style="color:var(--primary-color)">actual sales</span>, using only information available beforehand.</div>',
             unsafe_allow_html=True,
         )
         recent = recent_rows(bundle, restaurant)

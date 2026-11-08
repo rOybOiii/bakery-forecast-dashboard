@@ -982,15 +982,15 @@ def render_events_workspace(bundle) -> None:
         """
         <style>
         .events-workspace-title {
-            color: var(--ink); font-size: clamp(2rem, 3.4vw, 3rem); font-weight: 750;
+            color: var(--ink); font-size: clamp(2rem, 3.4vw, 3rem); font-weight: 650;
             letter-spacing: -0.04em; line-height: 1.04; margin: 0 0 .2rem;
         }
         .event-section-kicker {
-            color: var(--green); font-size: .7rem; font-weight: 750;
+            color: var(--green); font-size: .7rem; font-weight: 650;
             letter-spacing: .11em; text-transform: uppercase; margin-bottom: .25rem;
         }
         .event-evidence-badge {
-            background: #dfe9e1; color: #2f6b55; border-radius: 999px;
+            background: var(--sage-soft); color: var(--sage); border-radius: 999px;
             padding: .45rem .65rem; text-align: center; white-space: nowrap;
             font-size: .76rem; font-weight: 650; margin-top: .35rem;
         }
@@ -1001,7 +1001,7 @@ def render_events_workspace(bundle) -> None:
         }
         .event-model-boundary {
             display: flex; justify-content: space-between; gap: .5rem;
-            background: #eee9dd; color: var(--muted); border-radius: 8px;
+            background: var(--quiet-surface); color: var(--muted); border-radius: 8px;
             padding: .55rem .7rem; margin: .75rem 0 .4rem; font-size: .74rem;
         }
         .event-model-boundary strong { color: var(--ink); }
@@ -1010,13 +1010,13 @@ def render_events_workspace(bundle) -> None:
             gap: .22rem; margin-bottom: .75rem;
         }
         .event-phase-cell {
-            min-height: 3.1rem; background: #dfe9e1; color: #2f6b55;
+            min-height: 3.1rem; background: var(--sage-soft); color: var(--sage);
             border-radius: 7px; padding: .45rem; display: flex;
             flex-direction: column; justify-content: center; text-align: center;
         }
-        .event-phase-cell.crest { background: #f5e6bd; color: #846a22; }
-        .event-phase-cell.peak { background: #f4d9ce; color: #a84e34; }
-        .event-phase-cell.tail { background: #e7e1ee; color: #685b88; }
+        .event-phase-cell.crest { background: var(--quiet-surface); color: var(--blue-gray); }
+        .event-phase-cell.peak { background: var(--soft-accent); color: var(--green); }
+        .event-phase-cell.tail { background: var(--storm-soft); color: var(--blue-gray); }
         .event-phase-cell strong { font-size: .72rem; }
         .event-phase-cell span { font-size: .66rem; margin-top: .12rem; }
         </style>

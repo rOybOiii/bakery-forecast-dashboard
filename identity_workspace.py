@@ -139,7 +139,8 @@ def render_identity_sidebar(identity: Identity) -> None:
     with st.sidebar:
         st.markdown("### Signed in")
         st.markdown(f"**{identity.name}**")
-        st.caption(identity.email)
+        if identity.email.strip().casefold() != identity.name.strip().casefold():
+            st.caption(identity.email)
         if identity.is_system_admin:
             st.caption("System administrator")
         else:

@@ -53,3 +53,54 @@ def test_enqueue_fresh_first_forecast_uses_active_recipe_and_relinks_review(
     assert repository.links == [(7, 42)]
     assert pipeline.closed
     assert repository.closed
+
+
+def test_organization_onboarding_requires_every_site_to_be_reviewed() -> None:
+    summary = onboarding_workspace.organization_onboarding_summary(
+        [
+            {"site_id": 1, "onboarding_state": "ready_for_forecast"},
+            {"site_id": 2, "onboarding_state": "skipped"},
+            {"site_id": 3, "onboarding_state": "needs_data"},
+        ]
+    )
+
+    assert summary["reviewed_count"] == 2
+    assert not summary["all_reviewed"]
+    assert not summary["can_forecast"]
+    assert [site["site_id"] for site in summary["unresolved"]] == [3]
+
+
+def test_organization_onboarding_needs_one_data_ready_site() -> None:
+    all_skipped = onboarding_workspace.organization_onboarding_summary(
+        [
+            {"site_id": 1, "onboarding_state": "skipped"},
+            {"site_id": 2, "onboarding_state": "skipped"},
+        ]
+    )
+    one_ready = onboarding_workspace.organization_onboarding_summary(
+        [
+            {"site_id": 1, "onboarding_state": "ready_for_forecast"},
+            {"site_id": 2, "onboarding_state": "skipped"},
+        ]
+    )
+
+    assert all_skipped["all_reviewed"]
+    assert not all_skipped["can_forecast"]
+    assert one_ready["all_reviewed"]
+    assert one_ready["can_forecast"]
+
+
+def test_established_organization_is_not_relocked_by_a_new_site() -> None:
+    sites = [
+        {"site_id": 1, "onboarding_state": "active"},
+        {"site_id": 2, "onboarding_state": "needs_data"},
+    ]
+
+    assert not onboarding_workspace.organization_requires_onboarding_gate(
+        sites,
+        force_site_id=None,
+    )
+    assert not onboarding_workspace.organization_requires_onboarding_gate(
+        [{"site_id": 2, "onboarding_state": "needs_data"}],
+        force_site_id=2,
+    )

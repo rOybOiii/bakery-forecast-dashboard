@@ -90,3 +90,26 @@ def test_gateway_client_reruns_first_forecast_with_current_data(monkeypatch) -> 
             "/v1/organizations/7/sites/8/metrics/9/forecasts/rerun",
         )
     ]
+
+
+def test_gateway_client_records_site_onboarding_skip(monkeypatch) -> None:
+    client = gateway_client.GatewayClient(
+        "https://api.credib.ly", "signed-access-token"
+    )
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def request(method: str, path: str, **kwargs):
+        requests.append((method, path, kwargs.get("json")))
+        return None
+
+    monkeypatch.setattr(client, "_request", request)
+
+    client.set_site_onboarding_skipped(7, 8, skipped=True)
+
+    assert requests == [
+        (
+            "PUT",
+            "/v1/organizations/7/sites/8/onboarding-skip",
+            {"skipped": True},
+        )
+    ]
