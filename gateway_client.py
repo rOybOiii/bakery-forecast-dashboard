@@ -172,6 +172,19 @@ class GatewayClient:
             json={"name": name},
         )
 
+    def set_site_onboarding_skipped(
+        self,
+        org_id: int,
+        site_id: int,
+        *,
+        skipped: bool,
+    ) -> None:
+        self._request(
+            "PUT",
+            f"/v1/organizations/{org_id}/sites/{site_id}/onboarding-skip",
+            json={"skipped": bool(skipped)},
+        )
+
     def invite_member(self, org_id: int, email: str) -> str:
         result = self._request(
             "POST",
@@ -541,6 +554,19 @@ class GatewayIdentityService:
             site_names=site_names,
             timezone=timezone,
             currency=currency,
+        )
+
+    def set_site_onboarding_skipped(
+        self,
+        *,
+        org_id: int,
+        site_id: int,
+        skipped: bool,
+    ) -> None:
+        self.client.set_site_onboarding_skipped(
+            org_id,
+            site_id,
+            skipped=skipped,
         )
 
     def organization_settings(self, _identity: Any, org_id: int) -> dict[str, Any]:

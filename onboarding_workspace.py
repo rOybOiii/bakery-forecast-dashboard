@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from io import BytesIO
 from pathlib import Path
 import sys
@@ -33,6 +34,7 @@ DECISION_LABELS = {
 DECISION_CODES = {value: key for key, value in DECISION_LABELS.items() if value}
 SITE_STATE_LABELS = {
     "needs_data": "Needs data",
+    "skipped": "Data deferred for now",
     "reviewing": "Data review in progress",
     "ready_for_forecast": "Ready for first forecast",
     "forecasting": "First forecast running",
@@ -488,6 +490,171 @@ def _upload_widget_key(context: dict[str, Any]) -> str:
     return f"sales_history_upload_{int(context['site_id'])}_{mode}"
 
 
+DATA_READY_SITE_STATES = {"ready_for_forecast", "forecasting", "active"}
+SETTLED_SITE_STATES = {*DATA_READY_SITE_STATES, "skipped"}
+
+
+def organization_onboarding_summary(
+    sites: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarize the organization-level onboarding completion boundary."""
+
+    ready = [
+        site
+        for site in sites
+        if str(site.get("onboarding_state")) in DATA_READY_SITE_STATES
+    ]
+    skipped = [
+        site for site in sites if str(site.get("onboarding_state")) == "skipped"
+    ]
+    unresolved = [
+        site
+        for site in sites
+        if str(site.get("onboarding_state")) not in SETTLED_SITE_STATES
+    ]
+    return {
+        "ready": ready,
+        "skipped": skipped,
+        "unresolved": unresolved,
+        "reviewed_count": len(sites) - len(unresolved),
+        "all_reviewed": bool(sites) and not unresolved,
+        "can_forecast": bool(ready) and not unresolved,
+    }
+
+
+def organization_requires_onboarding_gate(
+    sites: list[dict[str, Any]],
+    *,
+    force_site_id: int | None,
+) -> bool:
+    """Keep initial setup together without relocking established organizations."""
+
+    if force_site_id is not None:
+        return False
+    return not any(
+        str(site.get("onboarding_state")) in {"forecasting", "active"}
+        for site in sites
+    )
+
+
+def _open_site_data_setup(site: dict[str, Any]) -> None:
+    site_id = int(site["site_id"])
+    dismissed = set(st.session_state.get("onboarding_dismissed_sites", ()))
+    dismissed.discard(site_id)
+    st.session_state.onboarding_dismissed_sites = tuple(sorted(dismissed))
+    st.session_state.client_site_id = site_id
+    st.session_state.pop("client_site_picker", None)
+    st.session_state.onboarding_context = _site_context(site)
+    st.session_state.onboarding_force_site = site_id
+
+
+def _render_organization_onboarding(
+    *,
+    organization: dict[str, Any],
+    sites: list[dict[str, Any]],
+    identity_repository,
+) -> None:
+    """Require one explicit data-ready or deferred decision for every site."""
+
+    summary = organization_onboarding_summary(sites)
+    st.markdown('<div class="dashboard-kicker">Organization setup</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<h1 class="dashboard-title">Set up {escape(str(organization["name"]))}</h1>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="dashboard-subtitle">Check every Site or Unit. Add and approve its sales history, or explicitly skip data for now.</div>',
+        unsafe_allow_html=True,
+    )
+    st.progress(
+        summary["reviewed_count"] / max(len(sites), 1),
+        text=f'{summary["reviewed_count"]} of {len(sites)} Sites / Units reviewed',
+    )
+
+    for site in sites:
+        site_id = int(site["site_id"])
+        state = str(site["onboarding_state"])
+        with st.container(border=True):
+            details, actions = st.columns([2.2, 1], gap="large")
+            details.markdown(f"### {site['site_name']}")
+            details.caption(SITE_STATE_LABELS.get(state, state.replace("_", " ").title()))
+            if state in DATA_READY_SITE_STATES:
+                details.success("Sales data is approved and this site is ready.")
+                continue
+            if state == "skipped":
+                details.info("No data was added. You can return to this setup at any time.")
+                if actions.button(
+                    "Add data",
+                    type="primary" if not summary["ready"] else "secondary",
+                    use_container_width=True,
+                    key=f"resume_skipped_site_{site_id}",
+                ):
+                    identity_repository.set_site_onboarding_skipped(
+                        org_id=int(site["org_id"]),
+                        site_id=site_id,
+                        skipped=False,
+                    )
+                    _open_site_data_setup(site)
+                    st.rerun()
+                continue
+            if state == "reviewing":
+                details.warning("The data review has started but is not complete.")
+                label = "Continue review"
+            else:
+                details.write("Add sales history now, or mark this site as skipped for now.")
+                label = "Add data"
+            if actions.button(
+                label,
+                type="primary",
+                use_container_width=True,
+                key=f"setup_site_{site_id}",
+            ):
+                _open_site_data_setup(site)
+                st.rerun()
+            if state == "needs_data" and actions.button(
+                "Skip for now",
+                use_container_width=True,
+                key=f"skip_site_{site_id}",
+            ):
+                identity_repository.set_site_onboarding_skipped(
+                    org_id=int(site["org_id"]),
+                    site_id=site_id,
+                    skipped=True,
+                )
+                st.rerun()
+
+    if summary["unresolved"]:
+        st.info(
+            "Finish or skip every remaining Site / Unit before entering the forecasting workspace."
+        )
+        return
+    if not summary["ready"]:
+        st.info(
+            "The organization is set up, but forecasting remains unavailable until at least one Site or Unit has approved data."
+        )
+        st.markdown("### Let’s get started by adding data")
+        st.caption("Choose Add data on any Site or Unit above. There is no forecast to open yet.")
+        return
+
+    first_ready = summary["ready"][0]
+    st.success("Every Site or Unit has been reviewed. Your forecasting workspace is ready.")
+    if st.button(
+        f"Continue to {first_ready['site_name']}",
+        type="primary",
+        use_container_width=True,
+        key=f"finish_org_onboarding_{organization['id']}",
+    ):
+        site_id = int(first_ready["site_id"])
+        dismissed = set(st.session_state.get("onboarding_dismissed_sites", ()))
+        dismissed.add(site_id)
+        st.session_state.onboarding_dismissed_sites = tuple(sorted(dismissed))
+        st.session_state.client_site_id = site_id
+        st.session_state.pop("client_site_picker", None)
+        st.session_state.pop("onboarding_force_site", None)
+        st.session_state.onboarding_context = _site_context(first_ready)
+        st.rerun()
+
+
 def _organization_setup(
     repository,
     identity: Identity,
@@ -691,6 +858,17 @@ def render_client_shell(identity: Identity) -> dict[str, Any] | None:
                 st.session_state.show_sales_data_workspace = False
                 st.session_state.show_organization_settings = False
                 st.rerun()
+        force_site_id = st.session_state.get("onboarding_force_site")
+        if organization_requires_onboarding_gate(
+            sites,
+            force_site_id=(int(force_site_id) if force_site_id is not None else None),
+        ):
+            _render_organization_onboarding(
+                organization=organization,
+                sites=sites,
+                identity_repository=identity_repository,
+            )
+            return None
         selected = sites_by_id[selected_id]
         context = _site_context(selected)
         existing_context = st.session_state.get("onboarding_context") or {}
@@ -1210,9 +1388,11 @@ def _ready_step(repository, context: dict[str, Any], state: dict[str, Any]) -> N
     st.caption(
         "These diagnostics are scaffolding for the Forecast 1 prior-calibration adapter; no model has been fitted yet."
     )
-    st.info("Setup is complete. Forecasting starts from this Site / Unit’s page.")
+    st.info(
+        "This Site / Unit is ready. Return to organization setup to finish or skip the remaining locations."
+    )
     if st.button(
-        "Go to your Site / Unit page to start forecasting",
+        "Continue organization setup",
         type="primary",
         use_container_width=True,
     ):
@@ -1256,6 +1436,24 @@ def render_site_home(site: dict[str, Any]) -> None:
         st.markdown(f'<div class="dashboard-kicker">{site["site_name"]}</div>', unsafe_allow_html=True)
         st.markdown('<h1 class="dashboard-title">Site home</h1>', unsafe_allow_html=True)
         onboarding_state = str(site["onboarding_state"])
+        if onboarding_state == "skipped":
+            st.markdown(
+                '<div class="dashboard-subtitle">This Site / Unit does not have sales data yet.</div>',
+                unsafe_allow_html=True,
+            )
+            with st.container(border=True):
+                st.markdown("## Let’s get you started with your data")
+                st.write(
+                    "Add sales history, review it, approve it, and run diagnostics to bring this Site / Unit online."
+                )
+                if st.button(
+                    f"Add {site['site_name']} sales data",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    _open_site_data_setup(site)
+                    st.rerun()
+            return
         if onboarding_state in {"needs_data", "reviewing"}:
             st.markdown(
                 '<div class="dashboard-subtitle">Finish reviewing this Site / Unit’s data before requesting its first forecast.</div>',
@@ -1353,18 +1551,18 @@ def render_onboarding_workspace(
         """
         <style>
         .onboard-progress { display:flex; gap:.5rem; margin:.4rem 0 1.6rem; overflow-x:auto; }
-        .onboard-step { min-width:95px; flex:1; color:#89918c; font-size:.76rem; font-weight:650; }
+        .onboard-step { min-width:95px; flex:1; color:var(--muted); font-size:.76rem; font-weight:650; }
         .onboard-step span { display:inline-grid; place-items:center; width:1.5rem; height:1.5rem;
-            margin-right:.35rem; border-radius:999px; background:#e6e3da; color:#66716a; }
-        .onboard-step.done { color:#527866; }
-        .onboard-step.done span { background:#bcd4c7; color:#214f3d; }
-        .onboard-step.active { color:#1d2a24; }
-        .onboard-step.active span { background:#2f6b55; color:white; }
+            margin-right:.35rem; border-radius:999px; background:var(--quiet-surface); color:var(--muted); }
+        .onboard-step.done { color:var(--sage); }
+        .onboard-step.done span { background:var(--sage-soft); color:var(--sage); }
+        .onboard-step.active { color:var(--ink); }
+        .onboard-step.active span { background:var(--green); color:white; }
         [class*="st-key-onboard_nav_step"] button {
             min-height: 1.75rem;
             padding: 0;
             justify-content: flex-start;
-            color: #527866;
+            color: var(--sage);
             font-size: .76rem;
             font-weight: 650;
         }
@@ -1376,8 +1574,8 @@ def render_onboarding_workspace(
             flex: 0 0 1.5rem;
             margin-right: .35rem;
             border-radius: 999px;
-            background: #bcd4c7;
-            color: #214f3d;
+            background: var(--sage-soft);
+            color: var(--sage);
             font-size: .76rem;
             line-height: 1;
         }
