@@ -70,6 +70,30 @@ PAGE_EVENTS = "Events"
 PAGE_SETUP = "Data setup"
 
 
+def _chart_palette() -> dict[str, str]:
+    """Return chart colors with enough contrast for the active Streamlit theme."""
+
+    if getattr(getattr(st.context, "theme", None), "type", "light") == "dark":
+        return {
+            "forecast": "#DC8454",
+            "forecast_band": "#B58D80",
+            "actual": "#A6AD7D",
+            "baseline": "#9AADB6",
+            "draft": "#EDAA83",
+            "muted": "#B8ADA3",
+            "grid": "#4A4542",
+        }
+    return {
+        "forecast": "#9D4F31",
+        "forecast_band": "#B66E49",
+        "actual": "#596047",
+        "baseline": "#4F6068",
+        "draft": "#B66E49",
+        "muted": "#6A625D",
+        "grid": "#CDBBAB",
+    }
+
+
 def _money(value: float, *, signed: bool = False) -> str:
     sign = "+" if signed and value > 0 else "−" if signed and value < 0 else ""
     return f"{sign}${abs(value):,.0f}"
@@ -482,12 +506,13 @@ def _operational_chart(
     draft: EventScenarioResult | None,
     actual_value: float | None,
 ) -> alt.Chart:
+    colors = _chart_palette()
     daily = published.daily.copy()
     daily["series_date"] = daily["target_date"]
     base = alt.Chart(daily).encode(
         x=alt.X("series_date:T", title=None, axis=alt.Axis(format="%b %-d", tickCount=7)),
     )
-    band = base.mark_area(color="#8ba797", opacity=0.20).encode(
+    band = base.mark_area(color=colors["forecast_band"], opacity=0.20).encode(
         y=alt.Y(
             "event_operational_q05:Q",
             title="Sales",
@@ -496,14 +521,18 @@ def _operational_chart(
         ),
         y2="event_operational_q95:Q",
     )
-    organic = base.mark_line(color="#6f8790", strokeDash=[6, 5], strokeWidth=2).encode(
+    organic = base.mark_line(
+        color=colors["baseline"], strokeDash=[6, 5], strokeWidth=2
+    ).encode(
         y=alt.Y("median:Q", scale=alt.Scale(zero=False)),
         tooltip=[
             alt.Tooltip("series_date:T", title="Date", format="%A, %b %-d"),
             alt.Tooltip("median:Q", title="Organic baseline", format="$,.0f"),
         ],
     )
-    published_line = base.mark_line(color="#2f6b55", strokeWidth=3, point=True).encode(
+    published_line = base.mark_line(
+        color=colors["forecast"], strokeWidth=3, point=True
+    ).encode(
         y=alt.Y("event_operational_median:Q", scale=alt.Scale(zero=False)),
         tooltip=[
             alt.Tooltip("series_date:T", title="Date", format="%A, %b %-d"),
@@ -527,7 +556,7 @@ def _operational_chart(
             "event_operational_q95"
         ].to_numpy()
         draft_band = alt.Chart(comparison).mark_area(
-            color="#d96a47", opacity=0.10
+            color=colors["draft"], opacity=0.10
         ).encode(
             x=alt.X("series_date:T", title=None),
             y=alt.Y(
@@ -538,7 +567,9 @@ def _operational_chart(
             ),
             y2="draft_q95:Q",
         )
-        gap = alt.Chart(comparison).mark_area(color="#d96a47", opacity=0.16).encode(
+        gap = alt.Chart(comparison).mark_area(
+            color=colors["draft"], opacity=0.16
+        ).encode(
             x=alt.X("series_date:T", title=None),
             y=alt.Y(
                 "published_forecast:Q",
@@ -549,7 +580,7 @@ def _operational_chart(
             y2="draft_forecast:Q",
         )
         draft_line = alt.Chart(comparison).mark_line(
-            color="#d96a47", strokeWidth=3, point=True
+            color=colors["draft"], strokeWidth=3, point=True
         ).encode(
             x=alt.X("series_date:T", title=None),
             y=alt.Y("draft_forecast:Q", scale=alt.Scale(zero=False)),
@@ -568,7 +599,7 @@ def _operational_chart(
             }
         )
         actual_point = alt.Chart(actual).mark_point(
-            color="#d96a47", filled=True, size=75
+            color=colors["actual"], filled=True, size=75
         ).encode(
             x=alt.X("series_date:T", title=None),
             y=alt.Y(
@@ -587,7 +618,11 @@ def _operational_chart(
         alt.layer(*layers)
         .properties(height=355)
         .configure_view(strokeOpacity=0)
-        .configure_axis(gridColor="#e3ded3", labelColor="#66736c", titleColor="#66736c")
+        .configure_axis(
+            gridColor=colors["grid"],
+            labelColor=colors["muted"],
+            titleColor=colors["muted"],
+        )
     )
 
 
@@ -615,8 +650,8 @@ def _saturation_track(
           }}
           .st-key-{widget_key} [role="slider"] {{
             width: 18px !important; height: 18px !important;
-            border: 2px solid #f7f4ec !important;
-            box-shadow: 0 0 0 1px #2f6b55 !important;
+            border: 2px solid var(--paper) !important;
+            box-shadow: 0 0 0 1px var(--green) !important;
           }}
           .st-key-{widget_key} [data-testid="stSliderThumbValue"] {{
             {thumb_value_style}
@@ -1231,6 +1266,7 @@ def _event_family_chart(
     template_id: str,
     analysis: EventFamilyAnalysis,
 ) -> alt.Chart:
+    colors = _chart_palette()
     template = template_by_id(template_id)
     occurrence_rows = []
     for occurrence in analysis.occurrences:
@@ -1259,7 +1295,7 @@ def _event_family_chart(
         )
     recommendation = pd.DataFrame(recommendation_rows)
     history_lines = alt.Chart(history).mark_line(
-        color="#9ca59f", opacity=0.48, strokeWidth=1.4, point=True
+        color=colors["muted"], opacity=0.48, strokeWidth=1.4, point=True
     ).encode(
         x=alt.X("day:O", title="Event day"),
         y=alt.Y(
@@ -1277,11 +1313,13 @@ def _event_family_chart(
         ],
     )
     base = alt.Chart(recommendation).encode(x=alt.X("day:O", title="Event day"))
-    band = base.mark_area(color="#2f6b55", opacity=0.15).encode(
+    band = base.mark_area(color=colors["forecast_band"], opacity=0.15).encode(
         y=alt.Y("q05:Q", scale=alt.Scale(zero=True)), y2="q95:Q"
     )
     median = base.mark_line(
-        color="#2f6b55", strokeWidth=3.5, point=alt.OverlayMarkDef(filled=True, size=55)
+        color=colors["forecast"],
+        strokeWidth=3.5,
+        point=alt.OverlayMarkDef(filled=True, size=55),
     ).encode(
         y=alt.Y("median:Q", scale=alt.Scale(zero=True)),
         tooltip=[
@@ -1292,7 +1330,7 @@ def _event_family_chart(
         ],
     )
     zero = alt.Chart(pd.DataFrame({"value": [0]})).mark_rule(
-        color="#9aa39d", strokeDash=[4, 4]
+        color=colors["muted"], strokeDash=[4, 4]
     ).encode(y="value:Q")
     return (
         alt.layer(history_lines, band, zero, median)
@@ -1300,12 +1338,15 @@ def _event_family_chart(
         .resolve_scale(y="shared")
         .configure_view(strokeOpacity=0)
         .configure_axis(
-            gridColor="#e3ded3", labelColor="#66736c", titleColor="#66736c"
+            gridColor=colors["grid"],
+            labelColor=colors["muted"],
+            titleColor=colors["muted"],
         )
     )
 
 
 def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart:
+    colors = _chart_palette()
     template = template_by_id(template_id)
     rows = [{"day": 0, "median": 0.0, "q05": 0.0, "q95": 0.0}]
     lower_effect, upper_effect = event_uncertainty(template, effect)
@@ -1336,7 +1377,7 @@ def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart
             axis=alt.Axis(tickMinStep=1, labelExpr="datum.value == 0 ? '' : datum.value"),
         )
     )
-    band = base.mark_area(color="#d96a47", opacity=0.18).encode(
+    band = base.mark_area(color=colors["draft"], opacity=0.18).encode(
         y=alt.Y(
             "q05:Q",
             title="Effect on sales (%)",
@@ -1351,7 +1392,9 @@ def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart
         ],
     )
     median = base.mark_line(
-        color="#d96a47", strokeWidth=3, point=alt.OverlayMarkDef(filled=True, size=55)
+        color=colors["draft"],
+        strokeWidth=3,
+        point=alt.OverlayMarkDef(filled=True, size=55),
     ).encode(
         y=alt.Y("median:Q", scale=alt.Scale(zero=True)),
         tooltip=[
@@ -1360,14 +1403,16 @@ def _event_shape_chart(template_id: str, effect: tuple[float, ...]) -> alt.Chart
         ],
     )
     zero = alt.Chart(pd.DataFrame({"value": [0]})).mark_rule(
-        color="#9aa39d", strokeDash=[4, 4]
+        color=colors["muted"], strokeDash=[4, 4]
     ).encode(y="value:Q")
     return (
         alt.layer(band, zero, median)
         .properties(height=170)
         .configure_view(strokeOpacity=0)
         .configure_axis(
-            gridColor="#e3ded3", labelColor="#66736c", titleColor="#66736c"
+            gridColor=colors["grid"],
+            labelColor=colors["muted"],
+            titleColor=colors["muted"],
         )
     )
 
@@ -2164,11 +2209,11 @@ def render_downtown_dashboard(bundle, *, site_name: str = "Downtown") -> None:
         """
         <style>
         .operational-title {
-            color: var(--ink); font-size: clamp(2rem, 3.4vw, 3rem); font-weight: 750;
+            color: var(--ink); font-size: clamp(2rem, 3.4vw, 3rem); font-weight: 650;
             letter-spacing: -0.04em; line-height: 1.04; margin: 0 0 .2rem;
         }
         .draft-banner {
-            background: #f4d9ce; border: 1px solid #e7b5a3; border-radius: 12px;
+            background: var(--soft-accent); border: 1px solid var(--line); border-radius: 12px;
             padding: .8rem 1rem; margin: .25rem 0 .75rem; color: var(--ink);
         }
         .draft-banner span { color: var(--muted); font-size: .86rem; }
@@ -2176,10 +2221,10 @@ def render_downtown_dashboard(bundle, *, site_name: str = "Downtown") -> None:
             border-radius: 999px; padding: .45rem .7rem; text-align: center;
             font-size: .72rem; font-weight: 750; letter-spacing: .06em; margin-top: .5rem;
         }
-        .draft-mode-label { background: #f4d9ce; color: #a84e34; }
-        .published-mode-label { background: #dfe9e1; color: #2f6b55; }
+        .draft-mode-label { background: var(--soft-accent); color: var(--green); }
+        .published-mode-label { background: var(--sage-soft); color: var(--sage); }
         .saturation-labels {
-            display: flex; justify-content: space-between; color: #77827b;
+            display: flex; justify-content: space-between; color: var(--muted);
             font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
             font-size: .6rem; line-height: 1; white-space: nowrap;
         }
@@ -2188,7 +2233,7 @@ def render_downtown_dashboard(bundle, *, site_name: str = "Downtown") -> None:
             color: var(--ink); font-size: .9rem; font-weight: 650;
             line-height: 1.15; padding-bottom: .35rem;
         }
-        .channel-spend-label.disabled { color: #98a09b; }
+        .channel-spend-label.disabled { color: var(--muted); }
         .channel-spend-value {
             color: var(--ink); font-size: .98rem; font-weight: 700;
             text-align: right; white-space: nowrap; padding-bottom: .35rem;
@@ -2198,20 +2243,20 @@ def render_downtown_dashboard(bundle, *, site_name: str = "Downtown") -> None:
             margin-left: .12rem;
         }
         .manual-plan-total {
-            background: #e8ebe5; border: 1px solid #d8ddd6; border-radius: 12px;
-            color: #66716a; padding: .72rem .9rem; margin: .15rem 0 .5rem;
+            background: var(--quiet-surface); border: 1px solid var(--line); border-radius: 12px;
+            color: var(--muted); padding: .72rem .9rem; margin: .15rem 0 .5rem;
         }
         .manual-plan-total span, .manual-plan-total small {
             display: block; font-size: .72rem; line-height: 1.2;
         }
         .manual-plan-total strong {
-            display: block; color: #525d56; font-size: 1.45rem;
+            display: block; color: var(--ink); font-size: 1.45rem;
             line-height: 1.15; margin: .15rem 0;
         }
-        .manual-plan-total small { color: #879089; }
+        .manual-plan-total small { color: var(--muted); }
         .event-template-summary {
             display: flex; flex-direction: column; gap: .2rem;
-            background: #f4e0d8; border-left: 4px solid #d96a47;
+            background: var(--soft-accent); border-left: 4px solid var(--green);
             border-radius: 10px; padding: .75rem .85rem; margin: .75rem 0;
         }
         .event-template-summary strong { color: var(--ink); font-size: 1rem; }
@@ -2232,11 +2277,11 @@ def render_downtown_dashboard(bundle, *, site_name: str = "Downtown") -> None:
             margin-left: auto !important;
         }
         section[role="dialog"]:has(.event-drawer-anchor) [data-testid="stRadio"] [role="radiogroup"] > label {
-            background: #fffdf8; border: 1px solid #e1dcd1;
+            background: var(--paper); border: 1px solid var(--line);
             border-radius: 10px; padding: .58rem .65rem; margin-bottom: .35rem;
         }
         section[role="dialog"]:has(.event-drawer-anchor) [data-testid="stVegaLiteChart"] {
-            background: #f1eee7; border-radius: 12px; padding: .25rem;
+            background: var(--quiet-surface); border-radius: 12px; padding: .25rem;
         }
         </style>
         """,

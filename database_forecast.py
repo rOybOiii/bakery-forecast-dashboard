@@ -18,6 +18,22 @@ from gateway_client import active_gateway_scope, application_call
 from onboarding_workspace import _enqueue_fresh_first_forecast
 
 
+def _chart_palette() -> dict[str, str]:
+    if getattr(getattr(st.context, "theme", None), "type", "light") == "dark":
+        return {
+            "forecast": "#DC8454",
+            "band": "#B58D80",
+            "actual": "#A6AD7D",
+            "baseline": "#9AADB6",
+        }
+    return {
+        "forecast": "#9D4F31",
+        "band": "#B66E49",
+        "actual": "#596047",
+        "baseline": "#4F6068",
+    }
+
+
 def load_current_site_forecast(site_id: int) -> dict[str, Any] | None:
     """Load only currently usable observations and model outputs for one site."""
 
@@ -202,6 +218,7 @@ def render_current_site_forecast(
 ) -> None:
     """Render a compact database-backed operational forecast."""
 
+    colors = _chart_palette()
     forecast = data["forecast"]
     predictions = pd.DataFrame(data["predictions"])
     predictions["date"] = pd.to_datetime(predictions["date"])
@@ -356,7 +373,7 @@ def render_current_site_forecast(
         )
         band = (
             alt.Chart(display_forecast)
-            .mark_area(color="#8fb9a8", opacity=0.32)
+            .mark_area(color=colors["band"], opacity=0.24)
             .encode(
                 x=alt.X("date:T", title=None),
                 y=alt.Y("presented_low:Q", title="Sales"),
@@ -365,7 +382,7 @@ def render_current_site_forecast(
         )
         organic_line = (
             alt.Chart(display_forecast)
-            .mark_line(color="#6f8790", strokeDash=[6, 5], strokeWidth=2)
+            .mark_line(color=colors["baseline"], strokeDash=[6, 5], strokeWidth=2)
             .encode(
                 x="date:T",
                 y="base_median:Q",
@@ -377,7 +394,7 @@ def render_current_site_forecast(
         )
         forecast_line = (
             alt.Chart(display_forecast)
-            .mark_line(color="#2f6b55", strokeWidth=3, point=True)
+            .mark_line(color=colors["forecast"], strokeWidth=3, point=True)
             .encode(
                 x="date:T",
                 y="presented_median:Q",
@@ -399,7 +416,7 @@ def render_current_site_forecast(
         )
         band = (
             alt.Chart(display_forecast)
-            .mark_area(color="#8fb9a8", opacity=0.32)
+            .mark_area(color=colors["band"], opacity=0.24)
             .encode(
                 x=alt.X("date:T", title=None),
                 y=alt.Y("presented_low:Q", title="Sales"),
@@ -408,7 +425,7 @@ def render_current_site_forecast(
         )
         forecast_line = (
             alt.Chart(display_forecast)
-            .mark_line(color="#2f6b55", strokeWidth=3)
+            .mark_line(color=colors["forecast"], strokeWidth=3)
             .encode(
                 x="date:T",
                 y="presented_median:Q",
@@ -425,7 +442,7 @@ def render_current_site_forecast(
     if not observations.empty:
         actual_line = (
             alt.Chart(observations)
-            .mark_line(color="#1d2a24", strokeWidth=2)
+            .mark_line(color=colors["actual"], strokeWidth=2)
             .encode(x="date:T", y="value:Q", tooltip=["date:T", "value:Q"])
         )
         chart = actual_line + chart
